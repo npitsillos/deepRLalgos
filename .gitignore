@@ -3,7 +3,8 @@ __pycache__/
 # Experiment logs
 experiments/
 
-# Ignore model weights
-*.pth
+ppo_*/
 
+# Main used for development
 main.py
+*.pth

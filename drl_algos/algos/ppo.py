@@ -3,7 +3,6 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 
-from torch.distributions import Categorical, Normal
 from torch.optim import Adam
 
 from drl_algos.utils import RolloutBuffer
@@ -11,22 +10,25 @@ from drl_algos.utils.utils import compute_gae, compute_discounted_returns
 
 class PPO():
 
-    def __init__(self, policy, env, logger, config, callback=None):
-        self.policy = policy
+    def __init__(self, agent, env, logger, config, callback=None):
+        self.agent = agent
         self.env = env
         self.logger = logger
         self.config = config
         self.callback = callback
 
-        self.optimizer = Adam(self.policy.parameters(), lr=self.config.LEARNING_RATE)
+        self.actor_optimizer = Adam(self.agent.actor.parameters(), lr=self.config.LEARNING_RATE)
+        self.critic_optimizer = Adam(self.agent.critic.parameters(), lr=self.config.LEARNING_RATE)
         self.buffer = RolloutBuffer(self.config.BATCH_SIZE)
+
+        self.epochs = 0
+        self.timesteps = 0
 
     def learn(self):
 
-        timesteps = 0
         best_score = self.env.reward_range[0]
         episodes = 0
-        while timesteps < self.config.TOTAL_TIMESTEPS:
+        while self.timesteps < self.config.TOTAL_TIMESTEPS:
 
             obs = self.env.reset()
             done = False
@@ -38,45 +40,41 @@ class PPO():
                 
                 # Feedforward observation to get action_probs and state_value
                 policy_obs = torch.tensor(obs, dtype=torch.float).to(self.config.DEVICE)
-                action_probs, state_value = self.policy(policy_obs)
-                dist = self.policy.get_action_dist(action_probs)
-
-                # Sample action from distribution
-                action = dist.sample()
-                act_log_prob = torch.squeeze(dist.log_prob(action)).item()
-                action = action.cpu().detach().numpy()
-                state_value = torch.squeeze(state_value).item()
+                action, act_log_prob, state_value = self.agent.act(policy_obs)
+                
                 # Execute action in environment
                 next_obs, reward, done, _ = self.env.step(action)
-                timesteps += 1
+                self.timesteps += 1
                 total_reward += reward
                 # Store transition
                 self.buffer.store((obs, action, act_log_prob, state_value, reward, done))
                 
-                if timesteps % self.config.UPDATE_FREQ == 0:
+                if self.timesteps % self.config.UPDATE_FREQ == 0:
                     if self.config.USE_GAE:
                         if done:
                             self.last_value = 0
                         else:
-                            _, self.last_value = self.policy(torch.tensor(next_obs, dtype=torch.float).to(self.config.DEVICE))
+                            _, _, self.last_value = self.agent.act(torch.tensor(next_obs, dtype=torch.float).to(self.config.DEVICE))
                     self.update()
                     self.buffer.clear()
                     if self.callback:
                         with torch.no_grad():
-                            avg_reward = self.callback.eval_policy(self.policy)
-                            if avg_reward > best_score:
-                                print(f"Previous best score: {best_score}, new best {avg_reward} ... saving model")
-                                torch.save(self.policy.state_dict(), self.config.WEIGHTS_PATH + "policy.pth")
-                                best_score = avg_reward
+                            performance_metric = self.callback.eval_policy(self.agent)
+                            if performance_metric > best_score or performance_metric == best_score:
+                                print(f"Previous best score: {best_score}, new best {performance_metric} ... saving model")
+                                self.agent.save_checkpoint(self.config.WEIGHTS_PATH)
+                                best_score = performance_metric
                 
                 obs = next_obs
             episodes += 1
             self.logger.add_scalar("train_env_reward", total_reward, episodes)
-        return episodes, timesteps
+        return episodes, self.timesteps
 
     def update(self):
+        update_avg_loss = 0
         for _ in range(self.config.EPOCHS_PER_UPDATE):
             obs, acts, act_log_probs, state_values, rewards, dones, batches = self.buffer.get_batches()
+            
             if self.config.USE_GAE:
                 advantages = compute_gae(rewards, state_values, dones, self.last_value, self.config.GAE_LAMBDA, self.config.GAMMA)
                 returns = advantages + state_values
@@ -88,27 +86,51 @@ class PPO():
 
             advantages = torch.tensor(advantages, dtype=torch.float).to(self.config.DEVICE)
             returns = torch.tensor(returns, dtype=torch.float32).to(self.config.DEVICE)
-    
+            total_loss = 0
+            policy_epoch_loss = 0
+            entropy_epoch_loss = 0
+            actor_epoch_loss = 0
+            critic_epoch_loss = 0
             for batch in batches:
                 batch_obs = torch.tensor(obs[batch], dtype=torch.float).to(self.config.DEVICE)
                 batch_acts = torch.tensor(acts[batch], dtype=torch.float).to(self.config.DEVICE)
                 batch_old_log_probs = torch.tensor(act_log_probs[batch], dtype=torch.float).to(self.config.DEVICE)
 
-                action_probs, state_values = self.policy(batch_obs)
-                dist = self.policy.get_action_dist(action_probs)
-                curr_log_probs = dist.log_prob(batch_acts)
-
+                curr_log_probs, entropies  = self.agent.act(batch_obs, actions=batch_acts)
+                
                 ratios = torch.exp(curr_log_probs - batch_old_log_probs)
                 surr_one = advantages[batch] * ratios
                 surr_two = torch.clamp(ratios, 1 - self.config.CLIP_RANGE, 1 + self.config.CLIP_RANGE) * advantages[batch]
 
-                actor_loss = -torch.min(surr_one, surr_two).mean()
-                critic_loss = F.mse_loss(torch.squeeze(state_values), returns[batch])
+                policy_loss = -torch.min(surr_one, surr_two).mean()
 
-                entropies = dist.entropy()
                 entropy_loss = -torch.mean(entropies)
+                actor_loss = policy_loss + self.config.ENTROPY_COEF * entropy_loss
+                
+                self.actor_optimizer.zero_grad()
+                actor_loss.backward()
+                self.actor_optimizer.step()
+
+                state_values = self.agent.get_state_value(batch_obs)
+                critic_loss = F.mse_loss(torch.squeeze(state_values), returns[batch])
+                self.critic_optimizer.zero_grad()
+                critic_loss.backward()
+                self.critic_optimizer.step()
 
                 total_loss = actor_loss + self.config.VALUE_COEF * critic_loss + self.config.ENTROPY_COEF * entropy_loss
-                self.optimizer.zero_grad()
-                total_loss.backward()
-                self.optimizer.step()
+
+                total_loss += total_loss.item()
+                policy_epoch_loss += policy_loss.item()
+                entropy_epoch_loss += entropy_loss.item()
+                actor_epoch_loss += actor_loss.item()
+                critic_epoch_loss += critic_loss.item()
+
+            update_avg_loss += total_loss
+            self.epochs += 1
+            self.logger.add_scalar("total_loss", total_loss, self.epochs)
+            self.logger.add_scalar("policy_loss", policy_epoch_loss, self.epochs)
+            self.logger.add_scalar("entropy_loss", entropy_epoch_loss, self.epochs)
+            self.logger.add_scalar("actor_loss", actor_epoch_loss, self.epochs)
+            self.logger.add_scalar("critic_loss", critic_epoch_loss, self.epochs)
+
+        self.logger.add_scalar("avg_epoch_loss", update_avg_loss / self.config.EPOCHS_PER_UPDATE, self.timesteps)
