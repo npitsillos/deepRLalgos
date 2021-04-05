@@ -3,7 +3,7 @@ import numpy as np
 
 class RolloutBuffer():
 
-    def __init__(self, batch_size):
+    def __init__(self, batch_size, use_lstm=False):
         self.batch_obs = []
         self.batch_acts = []
         self.batch_log_probs = []
@@ -11,16 +11,27 @@ class RolloutBuffer():
         self.batch_rewards = []
         self.batch_dones = []
 
+        if use_lstm:
+            self.batch_h_ins = []
+            self.batch_h_outs = []
+        self.use_lstm = use_lstm
         self.batch_size = batch_size
 
     def store(self, sample):
-        obs, action, log_prob, value, reward, done = sample
+        if self.use_lstm:
+            obs, action, log_prob, value, reward, done, h_in, h_out = sample
+        else:
+            obs, action, log_prob, value, reward, done = sample
         self.batch_obs.append(obs)
         self.batch_acts.append(action)
         self.batch_log_probs.append(log_prob)
         self.batch_state_values.append(value)
         self.batch_rewards.append(reward)
         self.batch_dones.append(done)
+
+        if self.use_lstm:
+            self.batch_h_ins.append(h_in)
+            self.batch_h_outs.append(h_out)
 
     def clear(self):
         self.batch_obs = []
@@ -29,6 +40,10 @@ class RolloutBuffer():
         self.batch_state_values = []
         self.batch_rewards = []
         self.batch_dones = []
+
+        if self.use_lstm:
+            self.batch_h_ins = []
+            self.batch_h_outs = []
 
     def get_batches(self):
         num_states = len(self.batch_obs)
@@ -43,6 +58,12 @@ class RolloutBuffer():
         state_values = np.array(self.batch_state_values)
         rewards = np.array(self.batch_rewards)
         dones = np.array(self.batch_dones)
+
+        if self.use_lstm:
+            h_ins = np.array(self.batch_h_ins)
+            h_outs = np.array(self.batch_h_outs)
+            
+            return obs, acts, act_log_probs, state_values, rewards, dones, h_ins, h_outs, batches
 
         return obs, acts, act_log_probs, state_values, rewards, dones, batches
 

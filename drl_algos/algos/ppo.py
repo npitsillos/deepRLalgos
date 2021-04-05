@@ -19,7 +19,7 @@ class PPO():
 
         self.actor_optimizer = Adam(self.agent.actor.parameters(), lr=self.config.LEARNING_RATE)
         self.critic_optimizer = Adam(self.agent.critic.parameters(), lr=self.config.LEARNING_RATE)
-        self.buffer = RolloutBuffer(self.config.BATCH_SIZE)
+        self.buffer = RolloutBuffer(self.config.BATCH_SIZE, use_lstm=self.config.USE_LSTM)
 
         self.epochs = 0
         self.timesteps = 0
@@ -29,7 +29,9 @@ class PPO():
         best_score = self.env.reward_range[0]
         episodes = 0
         while self.timesteps < self.config.TOTAL_TIMESTEPS:
-
+            if self.config.USE_LSTM:
+                h_out = (torch.zeros([1, 1, 32], dtype=torch.float).to(self.config.DEVICE),
+                            torch.zeros([1, 1, 32], dtype=torch.float).to(self.config.DEVICE))
             obs = self.env.reset()
             done = False
             total_reward = 0
@@ -40,21 +42,32 @@ class PPO():
                 
                 # Feedforward observation to get action_probs and state_value
                 policy_obs = torch.tensor(obs, dtype=torch.float).to(self.config.DEVICE)
-                action, act_log_prob, state_value = self.agent.act(policy_obs)
+                if self.config.USE_LSTM:
+                    h_in = h_out
+                    action, act_log_prob, state_value, h_out = self.agent.act(policy_obs, h_in=h_in)
+                else:
+                    action, act_log_prob, state_value = self.agent.act(policy_obs)
                 
                 # Execute action in environment
                 next_obs, reward, done, _ = self.env.step(action)
                 self.timesteps += 1
                 total_reward += reward
+
                 # Store transition
-                self.buffer.store((obs, action, act_log_prob, state_value, reward, done))
+                if self.config.USE_LSTM:
+                    self.buffer.store((obs, action, act_log_prob, state_value, reward, done, h_in, h_out))    
+                else:
+                    self.buffer.store((obs, action, act_log_prob, state_value, reward, done))
                 
                 if self.timesteps % self.config.UPDATE_FREQ == 0:
                     if self.config.USE_GAE:
                         if done:
                             self.last_value = 0
                         else:
-                            _, _, self.last_value = self.agent.act(torch.tensor(next_obs, dtype=torch.float).to(self.config.DEVICE))
+                            if self.config.USE_LSTM:
+                                self.last_value = self.agent.get_state_value(torch.tensor(next_obs, dtype=torch.float).to(self.config.DEVICE), h_in=h_out)
+                            else:
+                                self.last_value = self.agent.get_state_value(torch.tensor(next_obs, dtype=torch.float).to(self.config.DEVICE))
                     self.update()
                     self.buffer.clear()
                     if self.callback:
@@ -73,7 +86,10 @@ class PPO():
     def update(self):
         update_avg_loss = 0
         for _ in range(self.config.EPOCHS_PER_UPDATE):
-            obs, acts, act_log_probs, state_values, rewards, dones, batches = self.buffer.get_batches()
+            if self.config.USE_LSTM:
+                obs, acts, act_log_probs, state_values, rewards, dones, h_ins, h_outs, batches = self.buffer.get_batches()
+            else:
+                obs, acts, act_log_probs, state_values, rewards, dones, batches = self.buffer.get_batches()
             
             if self.config.USE_GAE:
                 advantages = compute_gae(rewards, state_values, dones, self.last_value, self.config.GAE_LAMBDA, self.config.GAMMA)
@@ -95,8 +111,12 @@ class PPO():
                 batch_obs = torch.tensor(obs[batch], dtype=torch.float).to(self.config.DEVICE)
                 batch_acts = torch.tensor(acts[batch], dtype=torch.float).to(self.config.DEVICE)
                 batch_old_log_probs = torch.tensor(act_log_probs[batch], dtype=torch.float).to(self.config.DEVICE)
-
-                curr_log_probs, entropies  = self.agent.act(batch_obs, actions=batch_acts)
+                
+                if self.config.USE_LSTM:
+                    batch_h_ins = (h_ins[batch][0][0].detach(), h_ins[batch][0][1].detach())
+                    curr_log_probs, entropies  = self.agent.act(batch_obs, actions=batch_acts, h_in=batch_h_ins)
+                else:
+                    curr_log_probs, entropies = self.agent.act(batch_obs, actions=batch_acts)
                 
                 ratios = torch.exp(curr_log_probs - batch_old_log_probs)
                 surr_one = advantages[batch] * ratios
@@ -111,7 +131,10 @@ class PPO():
                 actor_loss.backward()
                 self.actor_optimizer.step()
 
-                state_values = self.agent.get_state_value(batch_obs)
+                if self.config.USE_LSTM:
+                    state_values = self.agent.get_state_value(batch_obs, h_in=batch_h_ins)
+                else:
+                    state_values = self.agent.get_state_value(batch_obs)
                 critic_loss = F.mse_loss(torch.squeeze(state_values), returns[batch])
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()
