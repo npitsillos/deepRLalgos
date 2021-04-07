@@ -1,7 +1,7 @@
 from collections import OrderedDict
 import warnings
 
-from gym.spaces import Discrete
+from gym.spaces import Discrete, Box
 import numpy as np
 
 
@@ -24,10 +24,17 @@ class ReplayBuffer(object):
         self,
         max_replay_buffer_size,
         env,
-        env_info_sizes,
-        env_info_sizes,
+        env_info_sizes = None,
         replace = True,
     ):
+        self.env = env
+
+        if env_info_sizes is None:
+            if hasattr(env, 'info_sizes'):
+                env_info_sizes = env.info_sizes
+            else:
+                env_info_sizes = dict()
+
         self._observation_dim = get_dim(env.observation_space)
         self._action_space = env.action_space
         self._action_dim = get_dim(env.action_space)
@@ -56,7 +63,6 @@ class ReplayBuffer(object):
 
         self._top = 0
         self._size = 0
-
 
     def add_path(self, path):
         """
@@ -95,11 +101,9 @@ class ReplayBuffer(object):
             )
         self.terminate_episode()
 
-
     def add_paths(self, paths):
         for path in paths:
             self.add_path(path)
-
 
     def add_sample(self, observation, action, reward, next_observation,
                    terminal, env_info, **kwargs):
@@ -119,16 +123,13 @@ class ReplayBuffer(object):
             self._env_infos[key][self._top] = env_info[key]
         self._advance()
 
-
     def terminate_episode(self):
         pass
-
 
     def _advance(self):
         self._top = (self._top + 1) % self._max_replay_buffer_size
         if self._size < self._max_replay_buffer_size:
             self._size += 1
-
 
     def random_batch(self, batch_size):
         indices = np.random.choice(self._size, size=batch_size, replace=self._replace or self._size < batch_size)
@@ -146,13 +147,11 @@ class ReplayBuffer(object):
             batch[key] = self._env_infos[key][indices]
         return batch
 
-
     def rebuild_env_info_dict(self, idx):
         return {
             key: self._env_infos[key][idx]
             for key in self._env_info_keys
         }
-
 
     def batch_env_info_dict(self, indices):
         return {
@@ -160,12 +159,16 @@ class ReplayBuffer(object):
             for key in self._env_info_keys
         }
 
+    def end_epoch(self, epoch):
+        return
 
     def num_steps_can_sample(self):
         return self._size
-
 
     def get_diagnostics(self):
         return OrderedDict([
             ('size', self._size)
         ])
+
+    def get_snapshot(self):
+        return {}

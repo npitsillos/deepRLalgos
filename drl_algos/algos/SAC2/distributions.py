@@ -249,15 +249,15 @@ class TanhNormal(Distribution):
 
     def get_diagnostics(self):
         stats = OrderedDict()
-        stats.update(create_stats_ordered_dict(
+        stats.update(utils.create_stats_ordered_dict(
             'mean',
             utils.to_numpy(self.mean),
         ))
-        stats.update(create_stats_ordered_dict(
+        stats.update(utils.create_stats_ordered_dict(
             'normal/std',
             utils.to_numpy(self.normal_std)
         ))
-        stats.update(create_stats_ordered_dict(
+        stats.update(utils.create_stats_ordered_dict(
             'normal/log_std',
             utils.to_numpy(torch.log(self.normal_std)),
         ))

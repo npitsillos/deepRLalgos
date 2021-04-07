@@ -4,19 +4,23 @@ from typing import Tuple
 import numpy as np
 import torch
 import torch.optim as optim
-from rlkit.core.loss import LossFunction, LossStatistics
 from torch import nn
 
-import rlkit.torch.pytorch_util as ptu
-from rlkit.core.eval_util import create_stats_ordered_dict
-from rlkit.torch.torch_rl_algorithm import TorchTrainer
-from rlkit.core.logging import add_prefix
-# import gtimer as gt
+import utils
+import gtimer as gt
+
 
 SACLosses = namedtuple(
     'SACLosses',
     'policy_loss qf1_loss qf2_loss alpha_loss',
 )
+
+
+def add_prefix(log_dict: OrderedDict, prefix: str, divider=''):
+    with_prefix = OrderedDict()
+    for key, val in log_dict.items():
+        with_prefix[prefix + divider + key] = val
+    return with_prefix
 
 
 def np_to_pytorch_batch(np_batch):
@@ -106,7 +110,7 @@ class SAC(object):
                     self.env.action_space.shape).item()
             else:
                 self.target_entropy = target_entropy
-            self.log_alpha = torch.zeros(1, requires_grad=True)
+            self.log_alpha = torch.zeros(1, requires_grad=True, device="cuda:0")
             self.alpha_optimizer = optimizer_class(
                 [self.log_alpha],
                 lr=policy_lr,
@@ -139,12 +143,10 @@ class SAC(object):
 
         self._num_train_steps = 0
 
-
     def train(self, np_batch):
         self._num_train_steps += 1
         batch = np_to_pytorch_batch(np_batch)
         self.train_on_batch(batch)
-
 
     def get_diagnostics(self):
         stats = OrderedDict([
@@ -153,9 +155,11 @@ class SAC(object):
         stats.update(self.eval_statistics)
         return stats
 
-
     def train_on_batch(self, batch):
-        losses, eval_stats = self.compute_loss(batch)
+        gt.blank_stamp()
+        losses, eval_stats = self.compute_loss(batch,
+            skip_statistics=not self._need_to_update_eval_statistics
+        )
 
         if self.use_automatic_entropy_tuning:
             self.alpha_optimizer.zero_grad()
@@ -178,13 +182,12 @@ class SAC(object):
 
         self.try_update_target_networks()
         if self._need_to_update_eval_statistics:
-            self.eval_statistics = stats
+            self.eval_statistics = eval_stats
             # Compute statistics using only one batch per epoch
             self._need_to_update_eval_statistics = False
-        # gt.stamp('sac training', unique=False)
+        gt.stamp('sac training', unique=False)
 
-
-    def compute_loss(self, batch):
+    def compute_loss(self, batch, skip_statistics=False):
         rewards = batch['rewards']
         terminals = batch['terminals']
         obs = batch['observations']
@@ -227,38 +230,38 @@ class SAC(object):
         """
         Save some statistics for eval
         """
-        # eval_statistics = OrderedDict()
-        # if not skip_statistics:
-        #     eval_statistics['QF1 Loss'] = np.mean(
-        #         qf1_loss.to('cpu').detach().numpy()
-        #     )
-        #     eval_statistics['QF2 Loss'] = np.mean(
-        #         qf2_loss.to('cpu').detach().numpy()
-        #     )
-        #     eval_statistics['Policy Loss'] = np.mean(
-        #         policy_loss.to('cpu').detach().numpy()
-        #     )
-        #     eval_statistics.update(create_stats_ordered_dict(
-        #         'Q1 Predictions',
-        #         ptu.get_numpy(q1_pred),
-        #     ))
-        #     eval_statistics.update(create_stats_ordered_dict(
-        #         'Q2 Predictions',
-        #         ptu.get_numpy(q2_pred),
-        #     ))
-        #     eval_statistics.update(create_stats_ordered_dict(
-        #         'Q Targets',
-        #         ptu.get_numpy(q_target),
-        #     ))
-        #     eval_statistics.update(create_stats_ordered_dict(
-        #         'Log Pis',
-        #         ptu.get_numpy(log_pi),
-        #     ))
-        #     policy_statistics = add_prefix(dist.get_diagnostics(), "policy/")
-        #     eval_statistics.update(policy_statistics)
-        #     if self.use_automatic_entropy_tuning:
-        #         eval_statistics['Alpha'] = alpha.item()
-        #         eval_statistics['Alpha Loss'] = alpha_loss.item()
+        eval_statistics = OrderedDict()
+        if not skip_statistics:
+            eval_statistics['QF1 Loss'] = np.mean(
+                qf1_loss.to('cpu').detach().numpy()
+            )
+            eval_statistics['QF2 Loss'] = np.mean(
+                qf2_loss.to('cpu').detach().numpy()
+            )
+            eval_statistics['Policy Loss'] = np.mean(
+                policy_loss.to('cpu').detach().numpy()
+            )
+            eval_statistics.update(utils.create_stats_ordered_dict(
+                'Q1 Predictions',
+                q1_pred.to('cpu').detach().numpy(),
+            ))
+            eval_statistics.update(utils.create_stats_ordered_dict(
+                'Q2 Predictions',
+                q2_pred.to('cpu').detach().numpy(),
+            ))
+            eval_statistics.update(utils.create_stats_ordered_dict(
+                'Q Targets',
+                q_target.to('cpu').detach().numpy(),
+            ))
+            eval_statistics.update(utils.create_stats_ordered_dict(
+                'Log Pis',
+                log_pi.to('cpu').detach().numpy(),
+            ))
+            policy_statistics = add_prefix(dist.get_diagnostics(), "policy/")
+            eval_statistics.update(policy_statistics)
+            if self.use_automatic_entropy_tuning:
+                eval_statistics['Alpha'] = alpha.item()
+                eval_statistics['Alpha Loss'] = alpha_loss.item()
 
         loss = SACLosses(
             policy_loss=policy_loss,
@@ -269,50 +272,44 @@ class SAC(object):
 
         return loss, eval_statistics
 
+    def try_update_target_networks(self):
+        if self._n_train_steps_total % self.target_update_period == 0:
+            self.soft_update(self.qf1, self.target_qf1)
+            self.soft_update(self.qf2, self.target_qf2)
 
-        def try_update_target_networks(self):
-            if self._n_train_steps_total % self.target_update_period == 0:
-                self.soft_update(self.qf1, self.target_qf1)
-                self.soft_update(self.qf2, self.target_qf2)
+    def soft_update(self, source, target):
+        target_params = target.parameters()
+        source_params = source.parameters()
+        for target_param, source_param in zip(target_params, source_params):
+            new_param = (target_param.data * (1.0 - self.soft_target_tau)
+                         + source_param.data * self.soft_target_tau)
+            target_param.data.copy_(new_param)
 
+    def end_epoch(self, epoch):
+        self._need_to_update_eval_statistics = True
 
-        def soft_update(self, target, source):
-            target_params = target.parameters()
-            source_params = source.parameters()
-            for target_param, source_param in zip(target_params, source_params):
-                new_param = (target_param.data * (1.0 - self.soft_target_tau)
-                             + source_param.data * self.soft_target_tau)
-                target_param.data.copy_(new_param)
+    def get_networks(self):
+        return [
+            self.policy,
+            self.qf1,
+            self.qf2,
+            self.target_qf1,
+            self.target_qf2,
+        ]
 
+    def get_optimizers(self):
+        return [
+            self.alpha_optimizer,
+            self.qf1_optimizer,
+            self.qf2_optimizer,
+            self.policy_optimizer,
+        ]
 
-        def end_epoch(self, epoch):
-            self._need_to_update_eval_statistics = True
-
-
-        def get_networks(self):
-            return [
-                self.policy,
-                self.qf1,
-                self.qf2,
-                self.target_qf1,
-                self.target_qf2,
-            ]
-
-
-        def get_optimizers(self):
-            return [
-                self.alpha_optimizer,
-                self.qf1_optimizer,
-                self.qf2_optimizer,
-                self.policy_optimizer,
-            ]
-
-
-        def get_snapshot(self):
-            return dict(
-                policy=self.policy,
-                qf1=self.qf1,
-                qf2=self.qf2,
-                target_qf1=self.target_qf1,
-                target_qf2=self.target_qf2,
-            )
+    def get_snapshot(self):
+        return dict(
+            policy=self.policy,
+            qf1=self.qf1,
+            qf2=self.qf2,
+            target_qf1=self.target_qf1,
+            target_qf2=self.target_qf2,
+        )
