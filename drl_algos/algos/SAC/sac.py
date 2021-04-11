@@ -5,9 +5,10 @@ import numpy as np
 import torch
 import torch.optim as optim
 from torch import nn
-
-import utils
 import gtimer as gt
+
+from drl_algos.algos import Algorithm
+from drl_algos import utils
 
 
 SACLosses = namedtuple(
@@ -16,56 +17,8 @@ SACLosses = namedtuple(
 )
 
 
-def add_prefix(log_dict: OrderedDict, prefix: str, divider=''):
-    with_prefix = OrderedDict()
-    for key, val in log_dict.items():
-        with_prefix[prefix + divider + key] = val
-    return with_prefix
-
-
-def np_to_pytorch_batch(np_batch):
-    if isinstance(np_batch, dict):
-        return {
-            k: _elem_or_tuple_to_variable(x)
-            for k, x in _filter_batch(np_batch)
-            if x.dtype != np.dtype('O')  # ignore object (e.g. dictionaries)
-        }
-    else:
-        _elem_or_tuple_to_variable(np_batch)
-
-
-def _elem_or_tuple_to_variable(elem_or_tuple):
-    if isinstance(elem_or_tuple, tuple):
-        return tuple(
-            _elem_or_tuple_to_variable(e) for e in elem_or_tuple
-        )
-    return from_numpy(elem_or_tuple).float()
-
-
-def from_numpy(*args, **kwargs):
-    return torch.from_numpy(*args, **kwargs).float().to("cuda:0")
-
-
-def get_numpy(tensor):
-    return tensor.to('cpu').detach().numpy()
-
-
-def _filter_batch(np_batch):
-    for k, v in np_batch.items():
-        if v.dtype == np.bool:
-            yield k, v.astype(int)
-        else:
-            yield k, v
-
-
-def np_ify(tensor_or_other):
-    if isinstance(tensor_or_other, torch.autograd.Variable):
-        return get_numpy(tensor_or_other)
-    else:
-        return tensor_or_other
-
-
-class SAC(object):
+class SAC(Algorithm):
+    """Class defining how to train a Soft Actor-Critic."""
 
     def __init__(
             self,
@@ -90,38 +43,34 @@ class SAC(object):
 
             use_automatic_entropy_tuning=True,
             target_entropy=None,
-            device="cpu"
     ):
+        """Initialises SAC algorithm."""
         super().__init__()
-        self.env = env
+
+        # Networks
         self.policy = policy
         self.qf1 = qf1
         self.qf2 = qf2
         self.target_qf1 = target_qf1
         self.target_qf2 = target_qf2
-        self.soft_target_tau = soft_target_tau
-        self.target_update_period = target_update_period
 
+        # Automatic entropy tuning
         self.use_automatic_entropy_tuning = use_automatic_entropy_tuning
         if self.use_automatic_entropy_tuning:
             if target_entropy is None:
                 # Use heuristic value from SAC paper
                 self.target_entropy = -np.prod(
-                    self.env.action_space.shape).item()
+                    env.action_space.shape).item()
             else:
                 self.target_entropy = target_entropy
-            self.log_alpha = torch.zeros(1, requires_grad=True, device="cuda:0")
+            # Create log_alpha variable and optimiser
+            self.log_alpha = torch.zeros(1, requires_grad=True, device=qf1.device)
             self.alpha_optimizer = optimizer_class(
                 [self.log_alpha],
                 lr=policy_lr,
             )
 
-        self.plotter = plotter
-        self.render_eval_paths = render_eval_paths
-
-        self.qf_criterion = nn.MSELoss()
-        self.vf_criterion = nn.MSELoss()
-
+        # Set up optimisers
         self.policy_optimizer = optimizer_class(
             self.policy.parameters(),
             lr=policy_lr,
@@ -135,17 +84,28 @@ class SAC(object):
             lr=qf_lr,
         )
 
+        # Setup loss functions
+        self.qf_criterion = nn.MSELoss()
+        self.vf_criterion = nn.MSELoss()
+
+        # Hyperparameters
+        self.soft_target_tau = soft_target_tau
+        self.target_update_period = target_update_period
         self.discount = discount
         self.reward_scale = reward_scale
+
+        # Stats
         self._n_train_steps_total = 0
         self._need_to_update_eval_statistics = True
         self.eval_statistics = OrderedDict()
-
         self._num_train_steps = 0
 
-    def train(self, np_batch):
+        self.plotter = plotter
+        self.render_eval_paths = render_eval_paths
+
+    def train(self, batch):
         self._num_train_steps += 1
-        batch = np_to_pytorch_batch(np_batch)
+        batch = utils.to_tensor_batch(batch, self.qf1.device)
         self.train_on_batch(batch)
 
     def get_diagnostics(self):
@@ -257,7 +217,10 @@ class SAC(object):
                 'Log Pis',
                 log_pi.to('cpu').detach().numpy(),
             ))
-            policy_statistics = add_prefix(dist.get_diagnostics(), "policy/")
+            policy_statistics = utils.add_prefix(
+                                    dist.get_diagnostics(),
+                                    "policy/"
+                                )
             eval_statistics.update(policy_statistics)
             if self.use_automatic_entropy_tuning:
                 eval_statistics['Alpha'] = alpha.item()
@@ -274,19 +237,24 @@ class SAC(object):
 
     def try_update_target_networks(self):
         if self._n_train_steps_total % self.target_update_period == 0:
-            self.soft_update(self.qf1, self.target_qf1)
-            self.soft_update(self.qf2, self.target_qf2)
-
-    def soft_update(self, source, target):
-        target_params = target.parameters()
-        source_params = source.parameters()
-        for target_param, source_param in zip(target_params, source_params):
-            new_param = (target_param.data * (1.0 - self.soft_target_tau)
-                         + source_param.data * self.soft_target_tau)
-            target_param.data.copy_(new_param)
+            utils.soft_update(self.qf1, self.target_qf1, self.soft_target_tau)
+            utils.soft_update(self.qf2, self.target_qf2, self.soft_target_tau)
 
     def end_epoch(self, epoch):
         self._need_to_update_eval_statistics = True
+
+    def set_device(self, device):
+        # Move networks to device
+        for network in self.get_networks():
+            network.to(device)
+
+        # Copy log_alpha to device then create new optimizer
+        if self.use_automatic_entropy_tuning:
+            self.log_alpha = self.log_alpha.detach().clone().to(device).requires_grad_(True)
+            self.alpha_optimizer = type(self.alpha_optimizer)(
+                [self.log_alpha],
+                lr=self.alpha_optimizer.param_groups[0]['lr'],
+            )
 
     def get_networks(self):
         return [

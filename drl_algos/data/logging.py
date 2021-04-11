@@ -14,10 +14,13 @@ import csv
 import json
 import pickle
 import errno
-import torch
-
-from tabulate import tabulate
 from collections import OrderedDict
+
+import torch
+from torch.utils.tensorboard import SummaryWriter
+
+from drl_algos.data.tabulate import tabulate
+
 
 def add_prefix(log_dict: OrderedDict, prefix: str, divider=''):
     with_prefix = OrderedDict()
@@ -147,6 +150,7 @@ class Logger(object):
 
     def set_snapshot_dir(self, dir_name):
         self._snapshot_dir = dir_name
+        self._writer = SummaryWriter(log_dir=self._snapshot_dir)
 
     def get_snapshot_dir(self, ):
         return self._snapshot_dir
@@ -186,6 +190,8 @@ class Logger(object):
             sys.stdout.flush()
 
     def record_tabular(self, key, val):
+        # print(self._tabular)
+        # self._writer.add_scalar(self._tabular_prefix_str + str(key), val, 1)
         self._tabular.append((self._tabular_prefix_str + str(key), str(val)))
 
     def record_dict(self, d, prefix=None):
@@ -267,6 +273,14 @@ class Logger(object):
     def dump_tabular(self, *args, **kwargs):
         wh = kwargs.pop("write_header", None)
         if len(self._tabular) > 0:
+            epoch = int(self._tabular[-1][1])
+            for key, val in self._tabular:
+                self._writer.add_scalar(
+                    self._tabular_prefix_str + str(key),
+                    np.array(val),
+                    epoch,
+                )
+
             if self._log_tabular_only:
                 self.table_printer.print_tabular(self._tabular)
             else:

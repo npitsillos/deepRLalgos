@@ -9,7 +9,7 @@ from torch.distributions.utils import _sum_rightmost
 import numpy as np
 from collections import OrderedDict
 
-import utils
+from drl_algos import utils
 
 
 class Distribution(TorchDistribution):
