@@ -69,7 +69,7 @@ class RolloutBuffer():
 
 class ReplayBuffer():
 
-    def __init(self, size, obs_shape, act_shape):
+    def __init(self, obs_shape, act_shape, size=100000):
         self.max_size = size
         self.position = 0
         self.size = 0

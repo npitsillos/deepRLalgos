@@ -11,11 +11,22 @@ str_to_layer_fn = {
     "cnn": nn.Conv2d
 }
 
-def create_fn(input_dim: np.ndarray, layers: Union[Tuple[int, int], Tuple[Tuple[str, int]]], layer_fn: Union[nn.Linear, nn.Conv2d, nn.LSTM] = None) -> nn.Sequential():
+def create_fn(input_dim: Tuple[int], layers: Union[Tuple[int, int], Tuple[Tuple[str, int]]], layer_fn: Union[nn.Linear, nn.Conv2d, nn.LSTM] = None) -> nn.ModuleList():
+    """
+        Creates a ModuleList torch module containing the layers in the base network.
+
+        :param input_dim: A tuple of ints defining the input size.
+        :param layers: A tuple defining the layer sizes if a single layer type
+            and the type of layer and their size if a custom model is needed.
+        :param layer_fn: Type of layer if a single type, None if a custom
+            model is needed.
+
+        :return: nn.ModuleList containing the layers of the base network.
+    """
     net = nn.ModuleList()
     if layer_fn is not None:
         # This is the case where a single type of layer policy is needed
-        net += [layer_fn(input_dim, layers[0])]
+        net += [layer_fn(*input_dim, layers[0])]
         for layer in range(len(layers) - 1):
             net += [layer_fn(layers[layer], layers[layer + 1])]
     else:
@@ -26,6 +37,10 @@ def create_fn(input_dim: np.ndarray, layers: Union[Tuple[int, int], Tuple[Tuple[
 
 
 class RecurrentMixin:
+    """
+        Mixin class to add the init_hidden_state attribute in a custom model
+        with an LSTM layer.
+    """
     def __init__(self):
         def init_lstm_state(batch_size=1):
             self.hidden = [torch.zeros(batch_size, self.layers[idx].hidden_size) for idx in self.rnn_layers]
@@ -48,6 +63,11 @@ class Net(nn.Module):
 class FeedForwardBase(Net):
     """
         Base class for all networks using only linear layers.
+
+        :param input_dim: A tuple of ints defining the input size.
+        :param layers: A tuple defining the layer sizes if a single layer type
+            and the type of layer and their size if a custom model is needed.
+        :param activation_fn: Activation function to use.
     """
 
     def __init__(self, input_dim, layers, activation_fn):
@@ -64,6 +84,11 @@ class FeedForwardBase(Net):
 class ConvolutionalBase(Net):
     """
         Base class for all networks using only convolutional layers.
+        
+        :param input_dim: A tuple of ints defining the input size.
+        :param layers: A tuple defining the layer sizes if a single layer type
+            and the type of layer and their size if a custom model is needed.
+        :param activation_fn: Activation function to use.
     """
     
     def __init__(self, input_dim, layers, activation_fn):
@@ -81,6 +106,10 @@ class ConvolutionalBase(Net):
 class RecurrentBase(Net):
     """
         Base class for all networks using only recurrent layers.
+
+        :param input_dim: A tuple of ints defining the input size.
+        :param layers: A tuple defining the layer sizes if a single layer type
+            and the type of layer and their size if a custom model is needed.
     """
 
     def __init__(self, input_dim, layers):
@@ -127,6 +156,11 @@ class RecurrentBase(Net):
 class CustomModelBase(Net):
     """
         Base class for all networks that use a custom policy.
+
+        :param input_dim: A tuple of ints defining the input size.
+        :param layers: A tuple defining the layer sizes if a single layer type
+            and the type of layer and their size if a custom model is needed.
+        :param activation_fn: Activation function to use.
     """
 
     def __init__(self, input_dim, layers, activation_fn):

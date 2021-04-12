@@ -7,6 +7,8 @@ from drl_algos.policies.base import FeedForwardBase, RecurrentBase, Convolutiona
 class Base_Q:
     """
         Base class for Q function networks.
+
+        :param features_in: Size of latent features.
     """
     def __init__(self, features_in):
 
@@ -21,6 +23,12 @@ class Base_Q:
 class FeedForwardQ(FeedForwardBase, Base_Q):
     """
         Class implementing the FeedForwardBase class for Q networks.
+
+        :param state_dim: Input state shape.
+        :param action_dim: Action output dimension.
+        :param layers: A tuple defining the layer sizes if a single layer type
+            and the type of layer and their size if a custom model is needed.
+        :param activation_fn: Activation function to use.
     """
 
     def __init__(self, state_dim, action_dim, layers=(256, 256), activation_fn=F.relu):
@@ -33,6 +41,11 @@ class FeedForwardQ(FeedForwardBase, Base_Q):
 class RecurrentQ(RecurrentBase, Base_Q):
     """
         Class implementing the RecurrentBase class for Q networks.
+
+        :param state_dim: Input state shape.
+        :param action_dim: Action output dimension.
+        :param layers: A tuple defining the layer sizes if a single layer type
+            and the type of layer and their size if a custom model is needed.
     """
 
     def __init__(self, state_dim, action_dim, layers=(128, 128)):
@@ -48,6 +61,12 @@ class RecurrentQ(RecurrentBase, Base_Q):
 class CustomModelQ(CustomModelBase, Base_Q):
     """
         Class implementing the CustomModelBase for Q networks.
+
+        :param state_dim: Input state shape.
+        :param action_dim: Action output dimension.
+        :param layers: A tuple defining the layer sizes if a single layer type
+            and the type of layer and their size if a custom model is needed.
+        :param activation_fn: Activation function to use.
     """
 
     def __init__(self, state_dim, action_dim, layers, activation_fn=F.relu):
@@ -65,6 +84,8 @@ class CustomModelQ(CustomModelBase, Base_Q):
 class Base_Value:
     """
         Base class for value function networks.
+
+        :param features_in: Size of latent features.
     """
 
     def __init__(self, features_in):
@@ -79,6 +100,11 @@ class Base_Value:
 class FeedForwardValue(FeedForwardBase, Base_Value):
     """
         Class implementing the FeedForwardBase for Value networks.
+
+        :param state_dim: Input state shape.
+        :param layers: A tuple defining the layer sizes if a single layer type
+            and the type of layer and their size if a custom model is needed.
+        :param activation_fn: Activation function to use.
     """
 
     def __init__(self, state_dim, layers=(256, 256), activation_fn=F.relu):
@@ -92,6 +118,10 @@ class FeedForwardValue(FeedForwardBase, Base_Value):
 class RecurrentValue(RecurrentBase, Base_Value):
     """
         Class implementing the RecurrentForwardBase for value networks.
+
+        :param state_dim: Input state shape.
+        :param layers: A tuple defining the layer sizes if a single layer type
+            and the type of layer and their size if a custom model is needed.
     """
 
     def __init__(self, state_dim, layers=(128, 128)):
@@ -108,6 +138,11 @@ class RecurrentValue(RecurrentBase, Base_Value):
 class CustomModelValue(CustomModelBase, Base_Value):
     """
         Class implementing the CustomModelBase for Q networks.
+
+        :param state_dim: Input state shape.
+        :param layers: A tuple defining the layer sizes if a single layer type
+            and the type of layer and their size if a custom model is needed.
+        :param activation_fn: Activation function to use.
     """
 
     def __init__(self, state_dim, layers, activation_fn=F.relu):

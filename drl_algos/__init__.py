@@ -1,4 +1,4 @@
-from .algos import PPO, SAC
+from .algos import PPO, SAC, PPONEW
 from .utils import Config
 from .policies import FeedForwardQ,\
                       FeedForwardValue,\
@@ -8,4 +8,6 @@ from .policies import FeedForwardQ,\
                       CustomModelValue,\
                       FeedForwardActor,\
                       RecurrentActor,\
-                      CustomActor
+                      CustomActor,\
+                      OnPolicyDiscreteActorCritic,\
+                      OffPolicyContinuousActorCritic
