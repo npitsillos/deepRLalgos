@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from typing import Union, Tuple
+from drl_algos.utils import utils
 
 str_to_layer_fn = {
     "fc": nn.Linear,
@@ -48,19 +49,55 @@ class RecurrentMixin:
 
         self.init_lstm_state = init_lstm_state
 
+class Network(nn.Module):
+    """
+        Wraps torch nn.Module to provide device type tracking.
+    """
 
-class Net(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.device = "cpu"
+
+    def to(self, *args, **kwargs):
+        """
+            Override super method to track device.
+        """
+        if kwargs.get("device") is not None:
+            self.device = kwargs.get("device")
+        elif isinstance(args[0], str):
+            self.device = args[0]
+        return super().to(*args, **kwargs)
+
+    def cuda(self, device=0):
+        """
+            Override super method to track device.
+        """
+        self.device = "cuda:" + str(device)
+        return super().cuda(device)
+
+
+class BaseNet(Network):
     """
         Base class which all policies inherit from.
     """
 
-    def __init__(self):
-        super(Net, self).__init__()
-
+    def __init__(self, latent_size):
+        super().__init__()
+        self.latent_size = latent_size
         self.is_recurrent = False
 
+    def set_layer_attrs(self):
+        for i, layer in enumerate(self.layers):
+            if isinstance(layer, nn.Linear):
+                name = "fc"
+            elif isinstance(layer, nn.Conv2d):
+                name = "cnn"
+            else:
+                name = "rnn"
+            self.__setattr__(f"{name}{i}", layer)
 
-class FeedForwardBase(Net):
+
+class FeedForwardBase(BaseNet):
     """
         Base class for all networks using only linear layers.
 
@@ -70,18 +107,25 @@ class FeedForwardBase(Net):
         :param activation_fn: Activation function to use.
     """
 
-    def __init__(self, input_dim, layers, activation_fn):
-        super(FeedForwardBase, self).__init__()
+    def __init__(self, input_dim, layers, activation_fn, weight_init_fn, bias_init_val):
+        super().__init__(layers[-1])
 
         self.layers = create_fn(input_dim, layers, nn.Linear)
         self.activation_fn = activation_fn
+        self.set_layer_attrs()
 
-    def _forward_features(self, x):
+        for layer in self.layers:
+            if weight_init_fn is not None:
+                weight_init_fn(layer.weight)
+            layer.bias.data.fill_(bias_init_val)
+
+    def forward(self, x):
         for layer in self.layers:
             x = self.activation_fn(layer(x))
         return x
 
-class ConvolutionalBase(Net):
+
+class ConvolutionalBase(BaseNet):
     """
         Base class for all networks using only convolutional layers.
         
@@ -92,18 +136,20 @@ class ConvolutionalBase(Net):
     """
     
     def __init__(self, input_dim, layers, activation_fn):
+        super().__init__(layers[-1])
 
         self.layers = create_fn(input_dim, layers, nn.Conv2d)
         self.activation_fn = activation_fn
+        self.set_layer_attrs()
     
-    def _forward_features(self, x):
+    def forward(self, x):
 
         for layer in self.layers:
             x = layer(x)
 
         return x
 
-class RecurrentBase(Net):
+class RecurrentBase(BaseNet):
     """
         Base class for all networks using only recurrent layers.
 
@@ -113,17 +159,18 @@ class RecurrentBase(Net):
     """
 
     def __init__(self, input_dim, layers):
-        super(RecurrentBase, self).__init__()
+        super().__init__(layers[-1])
 
         self.layers = create_fn(input_dim, layers, nn.LSTMCell)
         self.is_recurrent = True
+        self.set_layer_attrs()
 
     def init_lstm_state(self, batch_size=1):
         # Do we also want to init from buffer?
         self.hidden = [torch.zeros(batch_size, layer.hidden_size) for layer in self.layers]
         self.cell = [torch.zeros(batch_size, layer.hidden_size) for layer in self.layers]
 
-    def _forward_features(self, x):
+    def forward(self, x):
         # Two cases here either 3-dim x -> T x B x F, batch of trajectories having T timesteps
         # or 2-dim/1-dim -> batch of timesteps
         if len(x.shape) == 3: # batch of trajectories
@@ -153,7 +200,7 @@ class RecurrentBase(Net):
 
         return x
 
-class CustomModelBase(Net):
+class CustomModelBase(BaseNet):
     """
         Base class for all networks that use a custom policy.
 
@@ -163,16 +210,24 @@ class CustomModelBase(Net):
         :param activation_fn: Activation function to use.
     """
 
-    def __init__(self, input_dim, layers, activation_fn):
-        super(CustomModelBase, self).__init__()
+    def __init__(self, input_dim, layers, activation_fn, weight_init_fn, bias_init_val):
+        super().__init__(layers[-1][1])
 
         self.layers = create_fn(input_dim, layers)
         self.activation_fn = activation_fn
         self.rnn_layers = [i for i, layer in enumerate(layers) if layer[0] == "rnn"]
         if len(self.rnn_layers) > 0:
+            self.is_recurrent = True
             RecurrentMixin.__init__(self)
+        self.set_layer_attrs()
 
-    def _forward_features(self, x):
+        for layer in self.layers:
+            if isinstance(layer, nn.Linear):
+                if weight_init_fn is not None:
+                    weight_init_fn(layer.weight)
+                layer.bias.data.fill_(bias_init_val)
+    
+    def forward(self, x):
 
         lstm_cell_idx = 0
         for idx, layer in enumerate(self.layers):
