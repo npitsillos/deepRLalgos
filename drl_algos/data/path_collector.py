@@ -63,6 +63,7 @@ class MdpPathCollector(object):
                 break
             num_steps_collected += path_len
             paths.append(path)
+
         self._num_paths_total += len(paths)
         self._num_steps_total += num_steps_collected
         self._epoch_paths.extend(paths)

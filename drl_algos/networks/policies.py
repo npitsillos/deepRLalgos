@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from drl_algos.networks.base import Network, FeedForwardBase, RecurrentBase, ConvolutionalBase, CustomModelBase
-from drl_algos.utils.distributions import Delta, CategoricalDistribution, TanhNormal
+from drl_algos.utils.distributions import Delta, CategoricalDistribution, TanhNormal, MultivariateDiagonalNormal
 from drl_algos.utils import utils
 
 LOG_SIG_MAX = 2
@@ -53,7 +53,7 @@ class GaussianPolicy(StochasticPolicy):
         self.log_std = None
         self.std = std
         self.action_dim = action_dim
-        self.dist = TanhNormal
+        self.dist = MultivariateDiagonalNormal
 
         self.fc_mean = nn.Linear(self.base.latent_size, *action_dim)
         self.fc_mean.weight.data.uniform_(-init_w, init_w)

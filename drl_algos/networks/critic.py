@@ -16,7 +16,7 @@ class Base_Q(Network):
         self.base = base
         self.q_fn = nn.Linear(self.base.latent_size, 1)
 
-    def forward(self, *inputs):
+    def forward(self, inputs):
         inputs = utils.cat(inputs, dim=1)
         inputs = utils.to_tensor(inputs, self.device)
         latent_features = self.base(inputs)
@@ -85,10 +85,10 @@ class Base_Value(Network):
         self.base = base
         self.value_fn = nn.Linear(self.base.latent_size, 1)
 
-    def forward(self, *inputs):
+    def forward(self, inputs):
         inputs = utils.to_tensor(inputs, self.device)
         latent_features = self.base(inputs)
-        return self.q_fn(latent_features)
+        return self.value_fn(latent_features)
 
 class FeedForwardValue(Base_Value):
     """
