@@ -1,8 +1,8 @@
 __pycache__/
-
+.vscode/
 # Experiment logs
 experiments/
-
+test/
 ppo_*/
 
 # Main used for development

@@ -1,109 +1,281 @@
-import torch
-import itertools
+from collections import OrderedDict, namedtuple
+from typing import Tuple
+
 import numpy as np
-import torch.nn.functional as F
+import torch
+import torch.optim as optim
+from torch import nn
+import gtimer as gt
 
-from copy import deepcopy
-from torch.optim import Adam
+from drl_algos.utils import utils
+from drl_algos.algos.algorithm import Algorithm
 
-from drl_algos.utils import ReplayBuffer
-from drl_algos.utils.utils import compute_gae, compute_discounted_returns
+SACLosses = namedtuple(
+    'SACLosses',
+    'policy_loss qf1_loss qf2_loss alpha_loss',
+)
 
-class SAC():
-    
-    def __init__(self, agent, env, logger, config, callback=None):
-        self.agent = agent
-        self.target_agent = deepcopy(self.agent)
-        self.env = env
-        self.logger = logger
-        self.config = config
-        self.callback = callback
+class SAC(Algorithm):
+    """Class defining how to train a Soft Actor-Critic."""
 
-        self.q_params = itertools.chain(self.agent.q1.parameters(), self.agent.q2.parameters())
-        self.q_optim = Adam(self.q_params, lr=self.config.LEARNING_RATE)
-        self.pi_optim =  Adam(self.agent.pi.parameters(), lr=self.config.LEARNING_RATE)
-        self.replay_buffer = ReplayBuffer(self.config.SIZE, self.env.observation_space.shape, self.env.action_space.n)
-    
-    def learn(self):
-        
-        # Collect s, a, r, s', d and add to replay buffer
-        # collect until enough for update
-        timesteps = 0
-        while timesteps < self.config.TOTAL_TIMESTEPS:
-            
-            obs = self.env.reset()
-            done = False
-            while not done:
+    def __init__(
+            self,
+            env,
+            policy,
+            qf1,
+            qf2,
+            target_qf1,
+            target_qf2,
 
-                if self.config.NORM_OBS:
-                    obs = (obs - obs.mean()) / (obs.std() + 1e-10)
-                
-                if timesteps > self.config.START_STEPS:
-                    action, _ = self.agent.act(torch.tensor(obs, dtype=torch.float).to(self.config.DEVICE))
-                else:
-                    action = self.env.action_space.sample()
-                
-                next_obs, reward, done, _ = self.env.step(action)
-                timesteps += 1
-                self.replay_buffer.store((obs, action, next_obs, reward, done))
+            discount=0.99,
+            reward_scale=1.0,
 
-                obs = next_obs
+            policy_lr=1e-3,
+            qf_lr=1e-3,
+            optimizer_class=optim.Adam,
 
-                if timesteps >= self.config.UPDATE_AFTER and timesteps % self.config.UPDATE_FREQ == 0:
-                    self.update()
-    
-    def update(self):
+            soft_target_tau=1e-2,
+            target_update_period=1,
+            plotter=None,
+            render_eval_paths=False,
 
-        for i in range(self.config.EPOCHS_PER_UPDATE):
-            batch_obs, batch_next_obs, batch_acts, batch_rewards, batch_dones = self.replay_buffer.sample_batch()
+            use_automatic_entropy_tuning=True,
+            target_entropy=None,
+    ):
+        """Initialises SAC algorithm."""
+        super().__init__()
 
-            # compute targets for q functions
-            # current q values
-            q1 = self.agent.q1(batch_obs, batch_acts)
-            q2 = self.agent.q2(batch_obs, batch_acts)
+        # Networks
+        self.policy = policy
+        self.qf1 = qf1
+        self.qf2 = qf2
+        self.target_qf1 = target_qf1
+        self.target_qf2 = target_qf2
 
-            with torch.no_grad():
-                # target actions from current policy
-                actions_curr, log_probs_curr = self.agent.pi(batch_next_obs)
+        # Automatic entropy tuning
+        self.use_automatic_entropy_tuning = use_automatic_entropy_tuning
+        if self.use_automatic_entropy_tuning:
+            if target_entropy is None:
+                # Use heuristic value from SAC paper
+                self.target_entropy = -np.prod(
+                    env.action_space.shape).item()
+            else:
+                self.target_entropy = target_entropy
+            # Create log_alpha variable and optimiser
+            self.log_alpha = torch.zeros(1, requires_grad=True, device=qf1.device)
+            self.alpha_optimizer = optimizer_class(
+                [self.log_alpha],
+                lr=policy_lr,
+            )
 
-                q1_target = self.target_agent.q1(batch_next_obs, actions_curr)
-                q2_target = self.target_agent.q2(batch_next_obs, actions_curr)
-                q_target = torch.min(q1_target, q2_target)
+        # Set up optimisers
+        self.policy_optimizer = optimizer_class(
+            self.policy.parameters(),
+            lr=policy_lr,
+        )
+        self.qf1_optimizer = optimizer_class(
+            self.qf1.parameters(),
+            lr=qf_lr,
+        )
+        self.qf2_optimizer = optimizer_class(
+            self.qf2.parameters(),
+            lr=qf_lr,
+        )
 
-                targets = batch_rewards + self.config.GAMMA * (1 - batch_dones) * (q_target - self.config.ALPHA * log_probs_curr)
+        # Setup loss functions
+        self.qf_criterion = nn.MSELoss()
+        self.vf_criterion = nn.MSELoss()
 
-            loss_q1 = F.mse_loss(q1, targets)
-            loss_q2 = F.mse_loss(q2, targets)
+        # Hyperparameters
+        self.soft_target_tau = soft_target_tau
+        self.target_update_period = target_update_period
+        self.discount = discount
+        self.reward_scale = reward_scale
 
-            total_loss = loss_q1 + loss_q2
+        # Stats
+        self._n_train_steps_total = 0
+        self._need_to_update_eval_statistics = True
+        self.eval_statistics = OrderedDict()
+        self._num_train_steps = 0
 
-            self.q_optim.zero_grad()
-            total_loss.backward()
-            self.q_optim.step()
-            
-            # Freeze Q-networks so you don't waste computational effort 
-            # computing gradients for them during the policy learning step.
-            for p in self.q_params:
-                p.requires_grad = False
-            
-            actions, log_probs = self.agent.pi(batch_obs)
-            q1 = self.agent.q1(batch_obs, actions)
-            q2 = self.agent.q2(batch_obs, actions)
-            q = torch.min(q1, q2)
+        self.plotter = plotter
+        self.render_eval_paths = render_eval_paths
 
-            # Entropy regularised policy loss
-            loss = (q - self.config.ALPHA * log_probs).mean()
+    def train(self, batch):
+        self._num_train_steps += 1
+        batch = utils.to_tensor_batch(batch, self.qf1.device)
+        self.train_on_batch(batch)
 
-            self.pi_optim.zero_grad()
-            loss.backward()
-            self.pi_optim.step()
+    def get_diagnostics(self):
+        stats = OrderedDict([
+            ('num train calls', self._num_train_steps),
+        ])
+        stats.update(self.eval_statistics)
+        return stats
 
-            # Unfreeze Q-networks so you can optimize it at next DDPG step.
-            for p in self.q_params:
-                p.requires_grad = True
+    def train_on_batch(self, batch):
+        gt.blank_stamp()
+        losses, eval_stats = self.compute_loss(batch,
+            skip_statistics=not self._need_to_update_eval_statistics
+        )
 
-            # Perform polyak averaging
-            with torch.no_grad():
-                for p, p_target in zip(self.agent.parameters(), self.target_agent.parameters()):
-                    p_target.data.mul_(self.config.POLYAK)
-                    p_target.data.add_((1 - self.config.POLYAK) * p_target.data)
+        if self.use_automatic_entropy_tuning:
+            self.alpha_optimizer.zero_grad()
+            losses.alpha_loss.backward()
+            self.alpha_optimizer.step()
+
+        self.policy_optimizer.zero_grad()
+        losses.policy_loss.backward()
+        self.policy_optimizer.step()
+
+        self.qf1_optimizer.zero_grad()
+        losses.qf1_loss.backward()
+        self.qf1_optimizer.step()
+
+        self.qf2_optimizer.zero_grad()
+        losses.qf2_loss.backward()
+        self.qf2_optimizer.step()
+
+        self._n_train_steps_total += 1
+
+        self.try_update_target_networks()
+        if self._need_to_update_eval_statistics:
+            self.eval_statistics = eval_stats
+            # Compute statistics using only one batch per epoch
+            self._need_to_update_eval_statistics = False
+        gt.stamp('sac training', unique=False)
+
+    def compute_loss(self, batch, skip_statistics=False):
+        rewards = batch['rewards']
+        terminals = batch['terminals']
+        obs = batch['observations']
+        actions = batch['actions']
+        next_obs = batch['next_observations']
+
+        dist = self.policy(obs)
+        new_obs_actions, log_pi = dist.rsample_and_logprob()
+        log_pi = log_pi.unsqueeze(-1)
+        if self.use_automatic_entropy_tuning:
+            alpha_loss = -(self.log_alpha * (log_pi + self.target_entropy).detach()).mean()
+            alpha = self.log_alpha.exp()
+        else:
+            alpha_loss = 0
+            alpha = 1
+
+        q_new_actions = torch.min(
+            self.qf1(obs, new_obs_actions),
+            self.qf2(obs, new_obs_actions),
+        )
+        policy_loss = (alpha*log_pi - q_new_actions).mean()
+
+        """
+        QF Loss
+        """
+        q1_pred = self.qf1(obs, actions)
+        q2_pred = self.qf2(obs, actions)
+        next_dist = self.policy(next_obs)
+        new_next_actions, new_log_pi = next_dist.rsample_and_logprob()
+        new_log_pi = new_log_pi.unsqueeze(-1)
+        target_q_values = torch.min(
+            self.target_qf1(next_obs, new_next_actions),
+            self.target_qf2(next_obs, new_next_actions),
+        ) - alpha * new_log_pi
+
+        q_target = self.reward_scale * rewards + (1. - terminals) * self.discount * target_q_values
+        qf1_loss = self.qf_criterion(q1_pred, q_target.detach())
+        qf2_loss = self.qf_criterion(q2_pred, q_target.detach())
+
+        """
+        Save some statistics for eval
+        """
+        eval_statistics = OrderedDict()
+        if not skip_statistics:
+            eval_statistics['QF1 Loss'] = np.mean(
+                qf1_loss.to('cpu').detach().numpy()
+            )
+            eval_statistics['QF2 Loss'] = np.mean(
+                qf2_loss.to('cpu').detach().numpy()
+            )
+            eval_statistics['Policy Loss'] = np.mean(
+                policy_loss.to('cpu').detach().numpy()
+            )
+            eval_statistics.update(utils.create_stats_ordered_dict(
+                'Q1 Predictions',
+                q1_pred.to('cpu').detach().numpy(),
+            ))
+            eval_statistics.update(utils.create_stats_ordered_dict(
+                'Q2 Predictions',
+                q2_pred.to('cpu').detach().numpy(),
+            ))
+            eval_statistics.update(utils.create_stats_ordered_dict(
+                'Q Targets',
+                q_target.to('cpu').detach().numpy(),
+            ))
+            eval_statistics.update(utils.create_stats_ordered_dict(
+                'Log Pis',
+                log_pi.to('cpu').detach().numpy(),
+            ))
+            policy_statistics = utils.add_prefix(
+                                    dist.get_diagnostics(),
+                                    "policy/"
+                                )
+            eval_statistics.update(policy_statistics)
+            if self.use_automatic_entropy_tuning:
+                eval_statistics['Alpha'] = alpha.item()
+                eval_statistics['Alpha Loss'] = alpha_loss.item()
+
+        loss = SACLosses(
+            policy_loss=policy_loss,
+            qf1_loss=qf1_loss,
+            qf2_loss=qf2_loss,
+            alpha_loss=alpha_loss,
+        )
+
+        return loss, eval_statistics
+
+    def try_update_target_networks(self):
+        if self._n_train_steps_total % self.target_update_period == 0:
+            utils.soft_update(self.qf1, self.target_qf1, self.soft_target_tau)
+            utils.soft_update(self.qf2, self.target_qf2, self.soft_target_tau)
+
+    def end_epoch(self, epoch):
+        self._need_to_update_eval_statistics = True
+
+    def set_device(self, device):
+        # Move networks to device
+        for network in self.get_networks():
+            network.to(device)
+
+        # Copy log_alpha to device then create new optimizer
+        if self.use_automatic_entropy_tuning:
+            self.log_alpha = self.log_alpha.detach().clone().to(device).requires_grad_(True)
+            self.alpha_optimizer = type(self.alpha_optimizer)(
+                [self.log_alpha],
+                lr=self.alpha_optimizer.param_groups[0]['lr'],
+            )
+
+    def get_networks(self):
+        return [
+            self.policy,
+            self.qf1,
+            self.qf2,
+            self.target_qf1,
+            self.target_qf2,
+        ]
+
+    def get_optimizers(self):
+        return [
+            self.alpha_optimizer,
+            self.qf1_optimizer,
+            self.qf2_optimizer,
+            self.policy_optimizer,
+        ]
+
+    def get_snapshot(self):
+        return dict(
+            policy=self.policy,
+            qf1=self.qf1,
+            qf2=self.qf2,
+            target_qf1=self.target_qf1,
+            target_qf2=self.target_qf2,
+        )
