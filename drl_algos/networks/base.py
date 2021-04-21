@@ -37,18 +37,6 @@ def create_fn(input_dim: Tuple[int], layers: Union[Tuple[int, int], Tuple[Tuple[
     return net
 
 
-class RecurrentMixin:
-    """
-        Mixin class to add the init_hidden_state attribute in a custom model
-        with an LSTM layer.
-    """
-    def __init__(self):
-        def init_lstm_state(batch_size=1):
-            self.hidden = [torch.zeros(batch_size, self.layers[idx].hidden_size) for idx in self.rnn_layers]
-            self.cell = [torch.zeros(batch_size, self.layers[idx].hidden_size) for idx in self.rnn_layers]
-
-        self.init_lstm_state = init_lstm_state
-
 class Network(nn.Module):
     """
         Wraps torch nn.Module to provide device type tracking.
@@ -218,7 +206,6 @@ class CustomModelBase(BaseNet):
         self.rnn_layers = [i for i, layer in enumerate(layers) if layer[0] == "rnn"]
         if len(self.rnn_layers) > 0:
             self.is_recurrent = True
-            RecurrentMixin.__init__(self)
         self.set_layer_attrs()
 
         for layer in self.layers:
@@ -228,18 +215,23 @@ class CustomModelBase(BaseNet):
                 layer.bias.data.fill_(bias_init_val)
     
     def forward(self, x):
-
         lstm_cell_idx = 0
+        self.init_lstm_state(x.size(0))
         for idx, layer in enumerate(self.layers):
             if isinstance(layer, nn.LSTMCell):
-                # Need to take into account the fact that here we pass timesteps x features
-                # but need to turn tensor to timesteps x trajectory_batch x features given the indices of
-                # trajectory start end.
+                # Add batch dimension if single input
                 if len(x.size()) == 1: x = x.view(1, -1)
                 hidden, cell = self.hidden[lstm_cell_idx], self.cell[lstm_cell_idx]
+                hidden = utils.to_tensor(hidden.detach().cpu().numpy(), x.device)
+                cell = utils.to_tensor(cell.detach().cpu().numpy(), x.device)
                 self.hidden[lstm_cell_idx], self.cell[lstm_cell_idx] = layer(x, (hidden, cell))
                 x = self.hidden[lstm_cell_idx]
                 lstm_cell_idx += 1
             else:
                 x = self.activation_fn(layer(x))
         return x
+
+    def init_lstm_state(self, batch_size=1):
+        # Do we also want to init from buffer?
+        self.hidden = [torch.zeros(batch_size, self.layers[idx].hidden_size) for idx in self.rnn_layers]
+        self.cell = [torch.zeros(batch_size, self.layers[idx].hidden_size) for idx in self.rnn_layers]

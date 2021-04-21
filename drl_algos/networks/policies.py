@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from drl_algos.networks.base import Network, FeedForwardBase, RecurrentBase, ConvolutionalBase, CustomModelBase
-from drl_algos.utils.distributions import Delta, CategoricalDistribution, TanhNormal, MultivariateDiagonalNormal
+from drl_algos.utils.distributions import Delta, Discrete, TanhNormal, MultivariateDiagonalNormal
 from drl_algos.utils import utils
 
 LOG_SIG_MAX = 2
@@ -31,6 +31,8 @@ class StochasticPolicy(Policy):
         dist = self(obs)
         actions = dist.sample()
         actions = utils.to_numpy(actions)
+        if not self.is_continuous:
+            return actions, {}
         return actions[0, :], {}
 
 
@@ -40,6 +42,7 @@ class DeterministicPolicy(StochasticPolicy):
         super().__init__()
         self.device = policy.device
         self._policy = policy
+        self.is_continuous = self._policy.is_continuous
 
     def forward(self, *args, **kwargs):
         dist = self._policy(*args, **kwargs)
@@ -47,13 +50,14 @@ class DeterministicPolicy(StochasticPolicy):
 
 class GaussianPolicy(StochasticPolicy):
 
-    def __init__(self, base, action_dim, std, init_w=1e-3):
+    def __init__(self, base, action_dim, std, dist, init_w=1e-3):
         super().__init__()
         self.base = base
         self.log_std = None
         self.std = std
         self.action_dim = action_dim
-        self.dist = MultivariateDiagonalNormal
+        self.dist = dist
+        self.is_continuous = True
 
         self.fc_mean = nn.Linear(self.base.latent_size, *action_dim)
         self.fc_mean.weight.data.uniform_(-init_w, init_w)
@@ -87,17 +91,16 @@ class GaussianPolicy(StochasticPolicy):
         log_prob = log_prob.sum(dim=1, keepdim=True)
         return log_prob
 
-
 class CategoricalPolicy(StochasticPolicy):
 
     def __init__(self, base, action_dim, init_w=1e-3):
         super().__init__()
         self.base = base
-        self.dist = CategoricalDistribution
-
+        self.dist = Discrete
+        self.is_continuous = False
         self.logits = nn.Linear(self.base.latent_size, *action_dim)
-        self.logits.weight.data.uniform_(-init_w, init_w)
-        self.logits.bias.data.fill_(0)
+        # self.logits.weight.data.uniform_(-init_w, init_w)
+        # self.logits.bias.data.fill_(0)
 
     def forward(self, obs):
         features = self.base(obs)
@@ -122,8 +125,8 @@ class FeedForwardGaussianPolicy(GaussianPolicy):
         :param activation_fn: Activation function to use.
     """
 
-    def __init__(self, state_dim, action_dim, layers=(256, 256), activation_fn=F.relu, weight_init_fn=utils.fanin_init, bias_init_val=0., std=None):
-        super().__init__(FeedForwardBase(state_dim, layers, activation_fn, weight_init_fn, bias_init_val), action_dim, std) 
+    def __init__(self, state_dim, action_dim, dist, layers=(256, 256), activation_fn=F.relu, weight_init_fn=utils.fanin_init, bias_init_val=0., std=None):
+        super().__init__(FeedForwardBase(state_dim, layers, activation_fn, weight_init_fn, bias_init_val), action_dim, std, dist) 
 
 
 class FeedForwardCategoricalPolicy(CategoricalPolicy):
@@ -143,8 +146,8 @@ class RecurrentGaussianPolicy(GaussianPolicy):
             and the type of layer and their size if a custom model is needed.
     """
 
-    def __init__(self, state_dim, action_dim, layers=(128, 128), std=None):
-        super().__init__(RecurrentBase(state_dim, layers), action_dim, std)
+    def __init__(self, state_dim, action_dim, dist, layers=(128, 128), std=None):
+        super().__init__(RecurrentBase(state_dim, layers), action_dim, std, dist)
 
         self.base.init_lstm_state()
 
@@ -161,8 +164,8 @@ class CustomGaussianPolicy(GaussianPolicy):
         :param activation_fn: Activation function to use.
     """
 
-    def __init__(self, state_dim, action_dim, layers, activation_fn=F.relu, weight_init_fn=utils.fanin_init, bias_init_val=0., std=None):
-        super().__init__(CustomModelBase(state_dim, layers, activation_fn, weight_init_fn, bias_init_val), action_dim, std)
+    def __init__(self, state_dim, action_dim, layers, dist, activation_fn=F.relu, weight_init_fn=utils.fanin_init, bias_init_val=0., std=None):
+        super().__init__(CustomModelBase(state_dim, layers, activation_fn, weight_init_fn, bias_init_val), action_dim, std, dist)
 
         if len(self.base.rnn_layers) > 0:
             self.base.init_lstm_state()

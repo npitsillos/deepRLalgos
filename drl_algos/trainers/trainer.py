@@ -243,8 +243,6 @@ class OnPolicyAlgorithm(Trainer):
             num_epochs,
             num_eval_steps_per_epoch,
             num_expl_steps_per_train_loop,
-            num_trains_per_train_loop,
-            num_train_loops_per_epoch=1
     ):
         super().__init__(
             algorithm=algorithm,
@@ -259,8 +257,6 @@ class OnPolicyAlgorithm(Trainer):
         self.max_path_length = max_path_length
         self.num_epochs = num_epochs
         self.num_eval_steps_per_epoch = num_eval_steps_per_epoch
-        self.num_trains_per_train_loop = num_trains_per_train_loop
-        self.num_train_loops_per_epoch = num_train_loops_per_epoch
         self.num_expl_steps_per_train_loop = num_expl_steps_per_train_loop
     
     def _train(self):
@@ -276,21 +272,20 @@ class OnPolicyAlgorithm(Trainer):
             )
             gt.stamp('evaluation sampling')
 
-            for _ in range(self.num_train_loops_per_epoch):
-                new_expl_paths = self.expl_path_collector.collect_new_paths(
-                    self.max_path_length,
-                    self.num_expl_steps_per_train_loop,
-                    discard_incomplete_paths=False,
-                )
-                gt.stamp('exploration sampling', unique=False)
-                self.replay_buffer.add_paths(new_expl_paths)
-                gt.stamp('data storing', unique=False)
+            new_expl_paths = self.expl_path_collector.collect_new_paths(
+                self.max_path_length,
+                self.num_expl_steps_per_train_loop,
+                discard_incomplete_paths=False,
+            )
+            gt.stamp('exploration sampling', unique=False)
+            self.replay_buffer.add_paths(new_expl_paths)
+            gt.stamp('data storing', unique=False)
 
-                self.training_mode(True)
-                train_data = self.replay_buffer.random_batch(self.batch_size)
-                self.algo.train(train_data)
-                gt.stamp('training', unique=False)
-                self.training_mode(False)
+            self.training_mode(True)
+            train_data = self.replay_buffer.random_batch(self.batch_size)
+            self.algo.train(train_data)
+            gt.stamp('training', unique=False)
+            self.training_mode(False)
 
             self._end_epoch(epoch)
 

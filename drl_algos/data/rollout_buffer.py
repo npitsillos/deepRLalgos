@@ -150,7 +150,6 @@ class RolloutBuffer(object):
                 terminals=self._terminals[batch_index],
                 next_observations=self._next_obs[batch_index],
             ))
-        
         # batch = dict(
         #         observations=self._observations,
         #         actions=self._actions,

@@ -268,22 +268,28 @@ class CategoricalDistribution(TorchDistributionWrapper):
         Implements the Categorical distribution
     """
 
-    def __init__(self, action_logits):
-        distribution = Categorical(logits=action_logits)
+    def __init__(self, logits):
+        distribution = Categorical(logits=logits)
         super().__init__(distribution)
 
     def get_diagnostics(self):
-        stats = OrderedDict()
+        pass
 
-        stats.update(utils.create_stats_ordered_dict(
-            "mean",
-            self.mean.to("cpu").detach().numpy()
-        ))
+    def __repr__(self):
+        return self.distribution.base_dist.__repr__()
 
-        stats.update(utils.create_stats_ordered_dict(
-            "variance",
-            self.variance.to("cpu").detach().numpy()
-        ))
+class Discrete(Distribution):
 
-        return stats
-    
+    def __init__(self, logits):
+        self.logits = logits
+        self.categorical = CategoricalDistribution(self.logits)
+
+    def sample(self):
+        return self.categorical.distribution.sample()[0]
+
+    def log_prob(self, action):
+        return self.categorical.distribution.log_prob(action)
+
+    @property
+    def mean(self):
+        return torch.argmax(torch.softmax(self.logits, dim=1))

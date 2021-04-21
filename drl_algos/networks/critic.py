@@ -16,7 +16,7 @@ class Base_Q(Network):
         self.base = base
         self.q_fn = nn.Linear(self.base.latent_size, 1)
 
-    def forward(self, inputs):
+    def forward(self, *inputs):
         inputs = utils.cat(inputs, dim=1)
         inputs = utils.to_tensor(inputs, self.device)
         latent_features = self.base(inputs)
@@ -49,7 +49,7 @@ class RecurrentQ(Base_Q):
     """
 
     def __init__(self, state_dim, action_dim, layers=(128, 128)):
-        super().__init__(RecurrentBase(state_dim + action_dim, layers))
+        super().__init__(RecurrentBase((state_dim[0] + action_dim[0],), layers))
 
         self.base.init_lstm_state()
 
@@ -66,7 +66,7 @@ class CustomModelQ(Base_Q):
     """
 
     def __init__(self, state_dim, action_dim, layers, activation_fn=F.relu, weight_init_fn=utils.fanin_init, bias_init_val=0.):
-        super().__init__(CustomModelBase(state_dim + action_dim, layers, activation_fn, weight_init_fn, bias_init_val))
+        super().__init__(CustomModelBase((state_dim[0] + action_dim[0],), layers, activation_fn, weight_init_fn, bias_init_val))
 
         if len(self.base.rnn_layers) > 0:
             self.base.is_recurrent = True
