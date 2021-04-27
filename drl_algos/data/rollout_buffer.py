@@ -26,8 +26,6 @@ class RolloutBuffer(object):
         env,
         env_info_sizes = None,
         replace = True,
-        gamma = 0.99,
-        gae_lambda = 0.95
     ):
         self.env = env
 
@@ -150,13 +148,6 @@ class RolloutBuffer(object):
                 terminals=self._terminals[batch_index],
                 next_observations=self._next_obs[batch_index],
             ))
-        # batch = dict(
-        #         observations=self._observations,
-        #         actions=self._actions,
-        #         rewards=self._rewards,
-        #         terminals=self._terminals,
-        #         next_observations=self._next_obs,
-        #     )
         for key in self._env_info_keys:
             assert key not in batch.keys()
             batch[key] = self._env_infos[key][indices]

@@ -31,7 +31,7 @@ class StochasticPolicy(Policy):
         dist = self(obs)
         actions = dist.sample()
         actions = utils.to_numpy(actions)
-        if not self.is_continuous:
+        if len(actions.shape) == 0:
             return actions, {}
         return actions[0, :], {}
 
@@ -42,11 +42,11 @@ class DeterministicPolicy(StochasticPolicy):
         super().__init__()
         self.device = policy.device
         self._policy = policy
-        self.is_continuous = self._policy.is_continuous
 
     def forward(self, *args, **kwargs):
         dist = self._policy(*args, **kwargs)
         return Delta(dist.mle_estimate())
+
 
 class GaussianPolicy(StochasticPolicy):
 
@@ -57,7 +57,6 @@ class GaussianPolicy(StochasticPolicy):
         self.std = std
         self.action_dim = action_dim
         self.dist = dist
-        self.is_continuous = True
 
         self.fc_mean = nn.Linear(self.base.latent_size, *action_dim)
         self.fc_mean.weight.data.uniform_(-init_w, init_w)
@@ -91,27 +90,32 @@ class GaussianPolicy(StochasticPolicy):
         log_prob = log_prob.sum(dim=1, keepdim=True)
         return log_prob
 
-class CategoricalPolicy(StochasticPolicy):
+
+class CategoricalPolicy(nn.Module):
 
     def __init__(self, base, action_dim, init_w=1e-3):
         super().__init__()
+        self.device = "cuda:0"
         self.base = base
         self.dist = Discrete
-        self.is_continuous = False
         self.logits = nn.Linear(self.base.latent_size, *action_dim)
-        # self.logits.weight.data.uniform_(-init_w, init_w)
-        # self.logits.bias.data.fill_(0)
-
-    def forward(self, obs):
+        self.logits.weight.data.uniform_(-init_w, init_w)
+        self.logits.bias.data.fill_(0)
+    
+    def get_action(self, obs):
+        obs = utils.to_tensor(obs[None], self.device)
+        dist = self(obs)
+        actions = dist.sample()
+        actions = utils.to_numpy(actions)
+        return actions, {}
+    
+    def forward(self, obs, print_l=False):
         features = self.base(obs)
         logits = self.logits(features)
-        return self.dist(logits)
-
-    def logprob(self, action, logits):
-        dist = self.dist(logits)
-        log_prob = dist.log_prob(action)
-        log_prob = log_prob.sum(dim=1, keepdim=True)
-        return log_prob
+        return self.dist(logits=logits)
+    
+    def reset(self):
+        pass
 
 class FeedForwardGaussianPolicy(GaussianPolicy):
     """
@@ -131,7 +135,7 @@ class FeedForwardGaussianPolicy(GaussianPolicy):
 
 class FeedForwardCategoricalPolicy(CategoricalPolicy):
 
-    def __init__(self, state_dim, action_dim, layers=(256, 256), activation_fn=F.relu, weight_init_fn=utils.fanin_init, bias_init_val=0.):
+    def __init__(self, state_dim, action_dim, layers=(256, 256), activation_fn=F.relu, weight_init_fn=None, bias_init_val=0.):
         super().__init__(FeedForwardBase(state_dim, layers, activation_fn, weight_init_fn, bias_init_val), action_dim)
 
 

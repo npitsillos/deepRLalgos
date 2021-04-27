@@ -293,3 +293,13 @@ class Discrete(Distribution):
     @property
     def mean(self):
         return torch.argmax(torch.softmax(self.logits, dim=1))
+
+    @property
+    def probs(self):
+        return self.categorical.distribution.probs
+    
+    def mle_estimate(self):
+        return torch.argmax(self.categorical.distribution.probs)
+
+    def entropy(self):
+        return self.categorical.distribution.entropy()

@@ -32,11 +32,13 @@ class PPO(Algorithm):
             n_iters=10,
             gamma=0.99,
             gae_lambda=0.95,
+            clip_range=0.2,
+            optim_eps=1e-5,
 
             plotter=None,
             render_eval_paths=False,
 
-            use_automatic_entropy_tuning=True,
+            use_automatic_entropy_tuning=False,
             target_entropy=None,
     ):
         """Initialises SAC algorithm."""
@@ -44,11 +46,11 @@ class PPO(Algorithm):
 
         # Networks
         self.policy = policy
-        self.old_policy = deepcopy(self.policy)
         self.critic = critic
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.n_iters = n_iters
+        self.clip_range = clip_range
         # Automatic entropy tuning
         self.use_automatic_entropy_tuning = use_automatic_entropy_tuning
         if self.use_automatic_entropy_tuning:
@@ -69,10 +71,12 @@ class PPO(Algorithm):
         self.policy_optimizer = optimizer_class(
             self.policy.parameters(),
             lr=policy_lr,
+            eps=optim_eps,
         )
         self.critic_optimizer = optimizer_class(
             self.critic.parameters(),
             lr=critic_lr,
+            eps=optim_eps,
         )
 
         # Stats
@@ -80,12 +84,16 @@ class PPO(Algorithm):
         self._need_to_update_eval_statistics = True
         self.eval_statistics = OrderedDict()
         self._num_train_steps = 0
+        self.policy_losses = []
+        self.critic_losses = []
+        self.approx_kl = []
+        self.entropy_losses = []
+        self.clip_fractions = []
 
         self.plotter = plotter
         self.render_eval_paths = render_eval_paths
 
     def train(self, batches):
-        self.old_policy.load_state_dict(self.policy.state_dict())
         batches = self._compute_td_target_and_advantages(batches)
         self.train_on_batch(batches)
 
@@ -101,10 +109,7 @@ class PPO(Algorithm):
         for i in range(self.n_iters):
             self._n_train_steps_total += 1
             for batch in batches:
-                batch = utils.to_tensor_batch(batch, self.policy.device)
-                losses, eval_stats = self.compute_loss(batch,
-                    skip_statistics=not self._need_to_update_eval_statistics
-                )
+                losses = self.compute_loss(batch)
 
                 self.policy_optimizer.zero_grad()
                 losses.policy_loss.backward()
@@ -115,59 +120,65 @@ class PPO(Algorithm):
                 losses.critic_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=0.5)
                 self.critic_optimizer.step()
-
-                if self._need_to_update_eval_statistics:
-                    self.eval_statistics = eval_stats
-                    # Compute statistics using only one batch per epoch
-                    self._need_to_update_eval_statistics = False
-                gt.stamp('ppo training', unique=False)
+        eval_statistics = OrderedDict()
+        eval_statistics["critic_loss"] = np.mean(self.critic_losses)
+        eval_statistics["policy_loss"] = np.mean(self.policy_losses)
+        eval_statistics["approx_kl"] = np.mean(self.approx_kl)
+        eval_statistics["clip_fraction"] = np.mean(self.clip_fractions)
+        eval_statistics["entropy"] = np.mean(self.entropy_losses)
+        self.eval_statistics = eval_statistics
+        gt.stamp('ppo training', unique=False)
 
     def compute_loss(self, batch, skip_statistics=False):
-        rewards = batch['rewards']
-        terminals = batch['terminals']
         obs = batch['observations']
         actions = batch['actions']
-        next_obs = batch['next_observations']
-        td_target = batch["td_target"]
+        returns = batch["returns"]
         advantages = batch["advantages"]
-        old_dist = self.old_policy(obs)
-        dist = self.policy(obs)
-        if not self.policy.is_continuous:
-            actions = torch.argmax(actions, dim=1, keepdim=True)
-        old_log_prob = old_dist.log_prob(actions)
-        curr_log_prob = dist.log_prob(actions)
-        ratios = torch.exp(curr_log_prob - old_log_prob)
+        td_target = batch["td_target"]
+        old_log_prob = batch["log_probs"]
+        curr_dist = self.policy(obs)
+        
+        if actions[0].sum() == 1:
+            # hack to know whether discrete
+            actions = torch.argmax(actions, dim=1, keepdim=True).squeeze()
+        # old_log_prob = old_dist.log_prob(actions)
+        curr_log_prob = curr_dist.log_prob(actions)
+        ratios = torch.exp(curr_log_prob - old_log_prob.detach())
         surr_one = ratios * advantages
-        surr_two = torch.clamp(ratios, 0.8, 1.2) * advantages
+        surr_two = torch.clamp(ratios, 1-self.clip_range, 1+self.clip_range) * advantages
 
+        entropy = -torch.mean(curr_dist.entropy())
         policy_loss = -torch.min(surr_one, surr_two).mean()
-        state_values = self.critic(obs)
-        critic_loss = F.mse_loss(state_values, td_target)
+
+        critic_loss = F.mse_loss(returns.detach(), self.critic(obs).squeeze())
         """
         Save some statistics for eval
         """
-        eval_statistics = OrderedDict()
-        if not skip_statistics:
-            eval_statistics['Critic Loss'] = np.mean(
-                critic_loss.to('cpu').detach().numpy()
-            )
-            eval_statistics['Policy Loss'] = np.mean(
-                policy_loss.to('cpu').detach().numpy()
-            )
-            policy_statistics = utils.add_prefix(
-                                    dist.get_diagnostics(),
-                                    "policy/"
-                                )
-            eval_statistics.update(policy_statistics)
+        self.critic_losses.append(np.mean(
+            critic_loss.to('cpu').detach().numpy()
+        ))
+        self.policy_losses.append(np.mean(
+            policy_loss.to('cpu').detach().numpy()
+        ))
+
+        self.approx_kl.append(np.mean((old_log_prob - curr_log_prob).to('cpu').detach().numpy()))
+        
+        self.clip_fractions.append(torch.mean((torch.abs(ratios - 1) > self.clip_range).float()).item())
+        self.entropy_losses.append(entropy.detach().cpu().numpy())
 
         loss = PPOLosses(
             policy_loss=policy_loss,
             critic_loss=critic_loss
         )
 
-        return loss, eval_statistics
+        return loss
 
     def end_epoch(self, epoch):
+        self.critic_losses = []
+        self.policy_losses = []
+        self.approx_kl = []
+        self.clip_fractions = []
+        self.entropy_losses = []
         self._need_to_update_eval_statistics = True
 
     def set_device(self, device):
@@ -187,7 +198,6 @@ class PPO(Algorithm):
         return [
             self.policy,
             self.critic,
-            self.old_policy,
         ]
 
     def get_optimizers(self):
@@ -200,32 +210,43 @@ class PPO(Algorithm):
     def get_snapshot(self):
         return dict(
             policy=self.policy,
-            old_policy=self.old_policy,
             critic=self.critic
         )
 
     def _compute_td_target_and_advantages(self, batches):
         batches_td_adv = []
         for batch in batches:
+            batch = utils.to_tensor_batch(batch, self.policy.device)
             rewards = batch["rewards"]
             obs = batch["observations"]
             next_obs = batch["next_observations"]
             terminals = batch["terminals"]
             state_values = self.critic(obs).squeeze()
             next_state_values = self.critic(next_obs).squeeze()
-            td_target = rewards + self.gamma * utils.to_numpy(next_state_values) * terminals
-            delta = td_target - utils.to_numpy(state_values)
+            td_target = rewards.squeeze() + self.gamma * next_state_values * (1 - terminals.squeeze())
+            delta = td_target - state_values
             delta = utils.to_numpy(delta)
 
             advantages = []
             advantage = 0.0
             for item in delta[::-1]:
-                advantage = self.gamma * self.gae_lambda * advantage + item[0]
+                advantage = self.gamma * self.gae_lambda * advantage + item
                 advantages.append(advantage)
             advantages.reverse()
             advantages = np.array(advantages)
-            advantages = advantages - advantages.mean() / advantages.std() + 1e-8
+
+            advantages = utils.to_tensor(advantages, self.policy.device)
             
-            batch.update(advantages=advantages, td_target=td_target)
+            returns = advantages + state_values
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            
+
+            dist = self.policy(obs)
+            if batch["actions"][0].sum() == 1:
+            # hack to know whether discrete
+                actions = torch.argmax(batch["actions"], dim=1, keepdim=True).squeeze()
+            log_probs = dist.log_prob(actions)
+            batch.update(advantages=advantages, returns=returns, td_target=td_target, log_probs=log_probs)
+
             batches_td_adv.append(batch)
         return batches_td_adv

@@ -105,7 +105,8 @@ class FeedForwardBase(BaseNet):
         for layer in self.layers:
             if weight_init_fn is not None:
                 weight_init_fn(layer.weight)
-            layer.bias.data.fill_(bias_init_val)
+            if bias_init_val is not None:
+                layer.bias.data.fill_(bias_init_val)
 
     def forward(self, x):
         for layer in self.layers:
