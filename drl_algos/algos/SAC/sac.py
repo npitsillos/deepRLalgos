@@ -38,8 +38,7 @@ class SAC(Algorithm):
 
             soft_target_tau=1e-2,
             target_update_period=1,
-            plotter=None,
-            render_eval_paths=False,
+            grad_clip=None,
 
             use_automatic_entropy_tuning=True,
             target_entropy=None,
@@ -93,15 +92,13 @@ class SAC(Algorithm):
         self.target_update_period = target_update_period
         self.discount = discount
         self.reward_scale = reward_scale
+        self.grad_clip = grad_clip
 
         # Stats
         self._n_train_steps_total = 0
         self._need_to_update_eval_statistics = True
         self.eval_statistics = OrderedDict()
         self._num_train_steps = 0
-
-        self.plotter = plotter
-        self.render_eval_paths = render_eval_paths
 
     def train(self, batch):
         self._num_train_steps += 1
@@ -124,18 +121,26 @@ class SAC(Algorithm):
         if self.use_automatic_entropy_tuning:
             self.alpha_optimizer.zero_grad()
             losses.alpha_loss.backward()
+            if self.grad_clip:
+                nn.utils.clip_grad_norm_(self.log_alpha, self.grad_clip)
             self.alpha_optimizer.step()
 
         self.policy_optimizer.zero_grad()
         losses.policy_loss.backward()
+        if self.grad_clip:
+            nn.utils.clip_grad_norm_(self.policy.parameters(), self.grad_clip)
         self.policy_optimizer.step()
 
         self.qf1_optimizer.zero_grad()
         losses.qf1_loss.backward()
+        if self.grad_clip:
+            nn.utils.clip_grad_norm_(self.qf1.parameters(), self.grad_clip)
         self.qf1_optimizer.step()
 
         self.qf2_optimizer.zero_grad()
         losses.qf2_loss.backward()
+        if self.grad_clip:
+            nn.utils.clip_grad_norm_(self.qf2.parameters(), self.grad_clip)
         self.qf2_optimizer.step()
 
         self._n_train_steps_total += 1
@@ -182,8 +187,8 @@ class SAC(Algorithm):
             self.target_qf1(next_obs, new_next_actions),
             self.target_qf2(next_obs, new_next_actions),
         ) - alpha * new_log_pi
-
-        q_target = self.reward_scale * rewards + (1. - terminals) * self.discount * target_q_values
+        # i.e., reward for action plus future reward unless next_state is done
+        q_target = self.reward_scale*rewards + (1.-terminals)*self.discount*target_q_values
         qf1_loss = self.qf_criterion(q1_pred, q_target.detach())
         qf2_loss = self.qf_criterion(q2_pred, q_target.detach())
 
