@@ -13,14 +13,17 @@ class Critic(Network):
             self,
             base: Base,
             output_size,
-            init_w=3e-3,
+            layer_init=None,
     ):
         super().__init__()
         self.base = base
 
         last_hidden_size = base.output_size
         self.fc_q = nn.Linear(last_hidden_size, output_size)
-        self.fc_q.weight.data.uniform_(-init_w, init_w)
+        if layer_init is None:
+            self.fc_q.weight.data.uniform_(-3e-3, 3e-3)
+        else:
+            utils.initialise(self.fc_q.weight, layer_init, F.linear)
         self.fc_q.bias.data.fill_(0)
 
     def forward(self, *inputs):
@@ -40,8 +43,30 @@ class MlpCritic(Critic):
     ):
         super().__init__(
             base=Mlp(
-                hidden_sizes=hidden_sizes,
+                layer_sizes=hidden_sizes,
                 input_size=input_size,
             ),
             output_size=output_size,
+        )
+
+class MlpCritic2(Critic):
+
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        hidden_sizes,
+        base_kwargs,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(
+            base=Mlp(
+                input_size=input_size,
+                layer_sizes=hidden_sizes,
+                **base_kwargs,
+            ),
+            output_size=output_size,
+            *args,
+            **kwargs
         )
