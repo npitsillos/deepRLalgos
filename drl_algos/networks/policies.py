@@ -65,7 +65,8 @@ class GaussianPolicy(StochasticPolicy):
         base: Base,
         action_dim,
         std=None,
-        init_w=1e-3,
+        mean_layer_init=None,
+        std_layer_init=None,
     ):
         super().__init__()
         self.base = base
@@ -76,14 +77,20 @@ class GaussianPolicy(StochasticPolicy):
         # Action mean layer
         last_hidden_size = base.output_size
         self.fc_mean = nn.Linear(last_hidden_size, action_dim)
-        self.fc_mean.weight.data.uniform_(-init_w, init_w)
+        if mean_layer_init is None:
+            self.fc_mean.weight.data.uniform_(-1e-3, 1e-3)
+        else:
+            utils.initialise(self.fc_mean.weight, mean_layer_init, F.tanh)
         self.fc_mean.bias.data.fill_(0)
 
         if std is None:
             # Learned std layer
             self.fc_log_std = nn.Linear(last_hidden_size, action_dim)
-            self.fc_log_std.weight.data.uniform_(-init_w, init_w)
-            self.fc_log_std.bias.data.uniform_(-init_w, init_w)
+            if std_layer_init is None:
+                self.fc_log_std.weight.data.uniform_(-1e-3, 1e-3)
+            else:
+                utils.initialise(self.fc_log_std.weight, std_layer_init, F.tanh)
+            self.fc_log_std.bias.data.fill_(0)
         else:
             # Fixed std layer
             self.log_std = np.log(std)
@@ -118,8 +125,51 @@ class MlpGaussianPolicy(GaussianPolicy):
     ):
         super().__init__(
             base=Mlp(
-                hidden_sizes=hidden_sizes,
+                layer_sizes=hidden_sizes,
                 input_size=input_size,
             ),
             action_dim=output_size,
+        )
+
+class MlpGaussianPolicy2(GaussianPolicy):
+
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        hidden_sizes,
+        base_kwargs,
+        **kwargs,
+    ):
+        super().__init__(
+            base=Mlp(
+                input_size=input_size,
+                layer_sizes=hidden_sizes,
+                **base_kwargs,
+            ),
+            output_size=output_size,
+            **kwargs
+        )
+
+class MlpSacPolicy(GaussianPolicy):
+
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        hidden_sizes,
+        mean_layer_init="orthogonal",
+        init_mean=False,
+        std_layer_init=False,
+    ):
+        super().__init__(
+            base=Mlp(
+                input_size=input_size,
+                layer_sizes=hidden_sizes,
+                mean_layer_init=mean_layer_init,
+                layer_activation=F.relu,
+            ),
+            action_dim=output_size,
+            mean_layer_init=mean_layer_init if init_mean else None,
+            std_layer_init=std_layer_init,
         )
