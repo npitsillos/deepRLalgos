@@ -4,12 +4,137 @@ import os.path as osp
 from collections import OrderedDict
 from numbers import Number
 import json
-
 import dateutil.tz
+
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
+
 from drl_algos.data.logging import logger
 from drl_algos.data import conf
+
+
+"""
+Notes on Initialisation
+The paper "HOW TO MAKE DEEP RL WORK IN PRACTICE", explored a number of
+implementation choices, among them intilisations functions. The long and short
+of it was that orthogonal seemed best for SAC and TD3, which uses ReLU
+activations. Orthogonal, in theory, can be applied to any activation function
+and it seems pretty good. This paper is nice because there aren't alot like it
+in general, but especially for reinforcement learning.
+
+The work focused on the effect of weight initilisation on early exploration,
+finding that weight initialisation greatly changes the probability of sampling
+different actions. A good weight initialisation scheme should have good coverage
+of the action space whilst avoiding clipping at the extreme values (which causes
+those actions to be oversampled).
+
+Unlike most implementations I see, this work doesn't initialise the output layer
+any differently than the hidden layers. Normally, the final layer is initialised
+uniformally in a small range, e.g. 1e-3 in this implementation. The authors
+didn't seem to compare to that scenario although I would suspect it should
+explore worse. They mainly focused on the effect on policy exploration but it
+seems they also initialised the critic with the same scheme. I would suspect
+small uniform initilisation to be worse than orthogonal for early exploration but
+I'm not sure about the critic. How they initialise the standard deviation layer
+is confusing, they claim it was initialised to 1 but that doesn't seem to be
+true. It doesn't seem learned so might need more experimenting.
+
+To wrap up:
+    - Orthogonal seems good, but should test final layer initialisation as the
+      small initialisation is done for stability reasons but this seems to have
+      been ignored in paper experiments.
+    - I should do experiments on pendulum and maybe walker2d to compare fanin
+      and orthogonal in the following scenarios:
+      - Initialise every layer but small init for output layers (current approach using fanin)
+      - Initialise every layer but small init for critic and policy std output
+        layers (highest probability of being helpful)
+        - This may boost initial exploration
+        - May want to try initialising policy mean layer for tanh instead of
+          ReLU
+      - Initialise every layer but small init for policy std output only (and mean layer if above doesn't help)
+        - I suspect critic initialisation will not help
+        - May want to initialise for linear instead of relu
+      - Initialise every layer (except mean and critic if they don't help)
+        - I suspect std initialisation doesn't help but maybe
+        - Again, may want to initialise for tanh
+      - Initialise every layer (baseline if any of above don't prove helpful)
+        - May want to try initialising final layers for correct activation
+    - I suspect orthogonal and/or kaiming will work well for Dreamer
+      - It has less concerns about final layer initialisation because its
+        supervised so no need to run above experiments
+      - May want to initialise the final layers for their specific output
+        activation
+        - I'm not sure what elu's is, probably just use relu for gain
+        - Could try replace elu with relu and see if it works better with the
+          initialisation
+"""
+
+
+def filter_activation_name(activation):
+    """This function replaces the activation name with relu if it is not
+    supported for initialisation.
+
+    Many initialisation functions take gain terms or the name of the activation
+    as input. Gains can be calculated using torch's built-in function but it does
+    not support all activations. I assume functions taking names instead of
+    gains only support the same activations which seems to be the case with
+    kaiming. Note - it seems like newer torch versions also support selu and
+    have added an identity activation.
+
+    If wishing to extend to new activations, it may be best to develop our own
+    calculate gains function so we can support more activations.
+    """
+    if activation in [F.linear, F.conv1d, F.conv2d, F.conv3d, F.sigmoid, F.tanh,
+                      F.relu, F.leaky_relu]:
+        return activation.__name__
+    return "relu"
+
+
+def initialise(weight_tensor, function="fanin", activation=F.relu):
+    name = filter_activation_name(activation)
+    if function == "fanin":
+        fanin(weight_tensor)
+    elif function == "xavier":
+        xavier(weight_tensor, name)
+    elif function == "kaiming":
+        kaiming(weight_tensor, name)
+    elif function == "orthogonal":
+        orthogonal(weight_tensor, name)
+
+
+def fanin(tensor):
+    """Default initialisation common in reinforcement learning."""
+    fan_in, _ = nn.init._calculate_fan_in_and_fan_out(tensor)
+    bound = 1. / np.sqrt(fan_in)
+    nn.init.uniform_(tensor, a=-bound, b=bound)
+
+
+def xavier(tensor, activation='tanh'):
+    """Common initialisation function, normally used with tanh."""
+    nn.init.xavier_uniform_(tensor, gain=nn.init.calculate_gain(activation))
+
+
+def kaiming(tensor, activation='relu'):
+    """Common initialisation function, normally used with relu or leaky relu."""
+    nn.init.kaiming_uniform_(tensor, nonlinearity=activation)
+
+
+def orthogonal(tensor, activation='relu'):
+    """Initilisation function that can be applied to any activation.
+
+    Has some interesting theoretical properties and seems to be attracting more
+    attention. Seems to be good for SAC and TD3 with ReLU activations. Note -
+    seems like they actually used gain for Tanh instead of RelU.
+    """
+    # TODO - compare always using tahn gain
+    nn.init.orthogonal_(tensor, gain=nn.init.calculate_gain(activation))
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 
 def to_tensor(np_array, device="cpu"):
     if isinstance(np_array, np.ndarray):
@@ -46,18 +171,6 @@ def identity(x):
     return x
 
 
-def fanin_init(tensor):
-    size = tensor.size()
-    if len(size) == 2:
-        fan_in = size[0]
-    elif len(size) > 2:
-        fan_in = np.prod(size[1:])
-    else:
-        raise Exception("Shape must be have dimension at least 2.")
-    bound = 1. / np.sqrt(fan_in)
-    return tensor.data.uniform_(-bound, bound)
-
-
 def soft_update(source, target, tau):
     target_params = target.parameters()
     source_params = source.parameters()
@@ -67,8 +180,24 @@ def soft_update(source, target, tau):
         target_param.data.copy_(new_param)
 
 
-def add_prefix(log_dict: OrderedDict, prefix: str, divider=''):
-    with_prefix = OrderedDict()
+def cat_dict(orig, new):
+    for key in new.keys():
+        if key in orig.keys():
+            orig[key].append(new[key])
+        else:
+            orig[key] = [new[key]]
+
+
+def add_dict(orig, new, prefix=""):
+    if prefix:
+        if not prefix.endswith("/"):
+            prefix += "/"
+    for key in new.keys():
+        orig[prefix+key] = new[key]
+
+
+def add_prefix(log_dict, prefix, divider=''):
+    with_prefix = {}
     for key, val in log_dict.items():
         with_prefix[prefix + divider + key] = val
     return with_prefix
