@@ -154,18 +154,20 @@ class TanhNormal(Distribution):
         X ~ tanh(Z)
         Z ~ N(mean, std)
     Note: this is not very numerically stable.
+
+    Note - this comes from rlkit. It is numerically unstable at -1, 1 but this
+           is dealt with by clamp operation in log_prob which is done when
+           pre_tanh_values are not provided
     """
 
-    def __init__(self, normal_mean, normal_std, epsilon=1e-6):
+    def __init__(self, normal_mean, normal_std):
         """
         :param normal_mean: Mean of the normal distribution
         :param normal_std: Std of the normal distribution
-        :param epsilon: Numerical stability epsilon when computing log-prob.
         """
         self.normal_mean = normal_mean
         self.normal_std = normal_std
         self.normal = MultivariateDiagonalNormal(normal_mean, normal_std)
-        self.epsilon = epsilon
 
     def sample_n(self, n, return_pre_tanh_value=False):
         z = self.normal.sample_n(n)
