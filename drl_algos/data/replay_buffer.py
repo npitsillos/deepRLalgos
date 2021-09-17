@@ -346,3 +346,35 @@ class EpisodicReplayBuffer(ReplayBuffer):
             next_observations=np.stack(next_obs_sequences),
         )
         return batch
+
+    class EREReplayBuffer(ReplayBuffer):
+
+        def ere_batch(self, batch_size, n, num_minibatch, num_minibatches,
+                      min=5000):
+            # Order indices oldest to most recent
+            indices = np.arange(self._size)
+            ordered = np.concatenate((indices[self._top:], indices[:self._top]))
+
+            # Calculate how many datapoints to sample from
+            emphasis = n**(num_minibatch*1000 / num_minibatches)
+            data_range = np.max((int(self._max_replay_buffer_size * emphasis), min))
+
+            # Sample from subset
+            indices = np.random.choice(
+                indices[-data_range:],
+                size=batch_size,
+                replace=self._replace or self._size < batch_size
+            )
+            if not self._replace and self._size < batch_size:
+                warnings.warn('Replace was set to false, but is temporarily set to true because batch size is larger than current size of replay.')
+            batch = dict(
+                observations=self._observations[indices],
+                actions=self._actions[indices],
+                rewards=self._rewards[indices],
+                terminals=self._terminals[indices],
+                next_observations=self._next_obs[indices],
+            )
+            for key in self._env_info_keys:
+                assert key not in batch.keys()
+                batch[key] = self._env_infos[key][indices]
+            return batch
