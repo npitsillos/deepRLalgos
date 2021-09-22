@@ -50,8 +50,6 @@ def initialise(weight_tensor, function="fanin", activation=F.relu):
 def fanin(tensor):
     """Default initialisation common in reinforcement learning."""
     fan_in, _ = nn.init._calculate_fan_in_and_fan_out(tensor)
-    if fan_in == 10 or fan_in==8:
-        fan_in = 64
     bound = 1. / np.sqrt(fan_in)
     nn.init.uniform_(tensor, a=-bound, b=bound)
 
