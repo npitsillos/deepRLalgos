@@ -159,6 +159,7 @@ class MlpSacPolicy(GaussianPolicy):
         output_size,
         hidden_sizes,
         layer_init="fanin",
+        layer_activation=F.relu,
         init_mean=False,
     ):
         super().__init__(
@@ -166,7 +167,7 @@ class MlpSacPolicy(GaussianPolicy):
                 input_size=input_size,
                 layer_sizes=hidden_sizes,
                 layer_init=layer_init,
-                layer_activation=F.relu,
+                layer_activation=layer_activation,
             ),
             action_dim=output_size,
             mean_layer_init=layer_init if init_mean else None,
