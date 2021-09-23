@@ -151,7 +151,7 @@ class MlpGaussianPolicy2(GaussianPolicy):
             **kwargs
         )
 
-class MlpSacPolicy(GaussianPolicy):
+class SacMlpPolicy(GaussianPolicy):
 
     def __init__(
         self,

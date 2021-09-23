@@ -70,3 +70,25 @@ class MlpCritic2(Critic):
             *args,
             **kwargs
         )
+
+
+class SacMlpCritic(Critic):
+    """The default SAC critic."""
+
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        hidden_sizes,
+        layer_init="fanin",
+        layer_activation=F.relu,
+    ):
+        super().__init__(
+            base=Mlp(
+                input_size=input_size,
+                layer_sizes=hidden_sizes,
+                layer_activation=layer_activation,
+                layer_init=layer_init,
+            ),
+            output_size=output_size,
+        )
