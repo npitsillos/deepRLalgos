@@ -264,3 +264,45 @@ class TanhNormal(Distribution):
             utils.to_numpy(torch.log(self.normal_std)),
         ))
         return stats
+
+
+class CategoricalDistribution(TorchDistributionWrapper):
+    """
+        Implements the Categorical distribution
+    """
+
+    def __init__(self, logits):
+        distribution = Categorical(logits=logits)
+        super().__init__(distribution)
+
+    def get_diagnostics(self):
+        pass
+
+    def __repr__(self):
+        return self.distribution.base_dist.__repr__()
+
+class Discrete(Distribution):
+
+    def __init__(self, logits):
+        self.logits = logits
+        self.categorical = CategoricalDistribution(self.logits)
+
+    def sample(self):
+        return self.categorical.distribution.sample()[0]
+
+    def log_prob(self, action):
+        return self.categorical.distribution.log_prob(action)
+
+    @property
+    def mean(self):
+        return torch.argmax(torch.softmax(self.logits, dim=1))
+
+    @property
+    def probs(self):
+        return self.categorical.distribution.probs
+    
+    def mle_estimate(self):
+        return torch.argmax(self.categorical.distribution.probs)
+
+    def entropy(self):
+        return self.categorical.distribution.entropy()

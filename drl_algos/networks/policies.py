@@ -4,7 +4,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from drl_algos.networks import Network, Base, Mlp
-from drl_algos.distributions import TanhNormal, Delta
+from drl_algos.distributions import TanhNormal, Delta, Discrete
 from drl_algos import utils
 
 
@@ -41,6 +41,8 @@ class StochasticPolicy(Policy):
         # log_p = utils.to_numpy(dist.log_prob(actions))
         actions = utils.to_numpy(actions)
         # return actions[0, :], {"log_p": log_p}
+        if len(actions.shape) == 0:
+            return actions, {}
         return actions[0, :], {}
 
 
@@ -58,6 +60,21 @@ class MakeDeterministic(StochasticPolicy):
         return Delta(dist.mle_estimate())
 
 
+class DiscretePolicy(StochasticPolicy):
+
+    def __init__(self, base, action_dim):
+        super().__init__()
+        self.base = base
+        self.action_dim = action_dim
+
+        self.action_logits = nn.Linear(self.base.output_size, self.action_dim)
+
+    def forward(self, obs):
+        features = self.base(obs)
+        logits = self.action_logits(features)
+        
+        return Discrete(logits)
+    
 class GaussianPolicy(StochasticPolicy):
 
     def __init__(
@@ -171,4 +188,25 @@ class SacMlpPolicy(GaussianPolicy):
             ),
             action_dim=output_size,
             mean_layer_init=layer_init if init_mean else None,
+        )
+
+class MlpDiscretePolicy(DiscretePolicy):
+
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        hidden_sizes,
+        layer_init="fanin",
+        layer_activation=F.elu
+    ):
+
+        super().__init__(
+            base=Mlp(
+                input_size=input_size,
+                layer_sizes=hidden_sizes,
+                layer_init=layer_init,
+                layer_activation=layer_activation
+            ),
+            action_dim=output_size
         )

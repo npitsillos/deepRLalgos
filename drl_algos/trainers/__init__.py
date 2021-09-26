@@ -1,1 +1,1 @@
-from drl_algos.trainers.trainer import Trainer, BatchRLAlgorithm
+from drl_algos.trainers.trainer import Trainer, BatchRLAlgorithm, OnPolicyAlgorithm
