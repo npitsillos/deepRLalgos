@@ -130,7 +130,7 @@ class MdpPathCollector2(object):
         - simplified function calls
 
     ToDo:
-        -  Add new arg to ignore terminals due to exceeding
+        - Add new arg to ignore terminals due to exceeding
         max_episode_length, without a timefeature these terminals are
         effectively just noise. I think we may need our own custom wrapper to
         do this. Gym's timelimit does not account for the fact that there could
@@ -193,7 +193,10 @@ class MdpPathCollector2(object):
         Args:
             num_steps (int): total number of steps to collect
             force_reset (bool): if true will always reset environment before
-                                any paths have been gathered
+                                any paths have been gathered. Potentially useful
+                                for on-policy where may not want to continue
+                                episode started by a stale policy? (Does this
+                                matter?)
 
         Returns:
             list of paths where each path is a dictionary, each path is from
@@ -261,6 +264,15 @@ class MdpPathCollector2(object):
             self,
             num_episodes,
     ):
+        """Performs rollouts to gather the desired number of episodes.
+
+        Args:
+            num_episodes (int): total number of episodes to collect
+
+        Returns:
+            list of paths where each path is a dictionary, each path is from
+            a distinct episode
+        """
         paths = []
         num_steps_collected = 0
 
@@ -306,7 +318,6 @@ class MdpPathCollector2(object):
         env_infos = []
         next_observations = []
         path_length = 0
-
 
         # Perform rollout starting from last seen observation
         o = self._last_obs
@@ -380,10 +391,20 @@ class MdpPathCollector2(object):
     def end_epoch(self, epoch):
         self._epoch_episodes = deque(maxlen=self._max_episodes_saved)
 
+    def get_epoch_episodes(self):
+        """Returns epoch episodes used for diagnostics.
+
+        Only call this function after calling get_diagnostics, as it removes
+        incomplete episodes.
+        """
+        return self._epoch_episodes
+
     def get_diagnostics(self):
-        """This should only be called once per epoch, after the point at which
-        no more data will be collected. Collecting more data then calling this
-        function again may result in incorrect diagnostic data.
+        """Returns diagnostic data as a dictionary.
+
+        This should only be called once per epoch, after the point at which no
+        more data will be collected because this function removes incomplete
+        episodes. Removed episodes could be added back but why bother?
         """
         # Don't report with final episode if it is incomplete
         last_ep_len = len(self._epoch_episodes[-1]['actions'])
@@ -409,6 +430,7 @@ class MdpPathCollector2(object):
         stats.update(eval_util.get_generic_episode_information(
             self._epoch_episodes)
         )
+
         return stats
 
     def get_snapshot(self):
