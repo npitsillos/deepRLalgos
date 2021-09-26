@@ -250,6 +250,8 @@ class MdpPathCollector2(object):
                 if key not in ["agent_infos", "env_infos", "full_observations",
                                "full_next_observations"]:
                     np_path[key] = np.array(path[key])
+                else:
+                    np_path[key] = path[key]
             paths.append(np_path)
 
         self._num_steps_total += num_steps_collected
@@ -283,6 +285,8 @@ class MdpPathCollector2(object):
                 if key not in ["agent_infos", "env_infos", "full_observations",
                                "full_next_observations"]:
                     np_path[key] = np.array(path[key])
+                else:
+                    np_path[key] = path[key]
             paths.append(np_path)
 
         self._num_steps_total += num_steps_collected
