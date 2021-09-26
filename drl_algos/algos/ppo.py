@@ -115,7 +115,7 @@ class PPO(Algorithm):
                 losses.policy_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=0.5)
                 self.policy_optimizer.step()
-                
+
                 self.critic_optimizer.zero_grad()
                 losses.critic_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=0.5)
@@ -137,7 +137,7 @@ class PPO(Algorithm):
         td_target = batch["td_target"]
         old_log_prob = batch["log_probs"]
         curr_dist = self.policy(obs)
-        
+
         if actions[0].sum() == 1:
             # hack to know whether discrete
             actions = torch.argmax(actions, dim=1, keepdim=True).squeeze()
@@ -162,7 +162,7 @@ class PPO(Algorithm):
         ))
 
         self.approx_kl.append(np.mean((old_log_prob - curr_log_prob).to('cpu').detach().numpy()))
-        
+
         self.clip_fractions.append(torch.mean((torch.abs(ratios - 1) > self.clip_range).float()).item())
         self.entropy_losses.append(entropy.detach().cpu().numpy())
 
@@ -236,10 +236,10 @@ class PPO(Algorithm):
             advantages = np.array(advantages)
 
             advantages = utils.to_tensor(advantages, self.policy.device)
-            
+
             returns = advantages + state_values
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-            
+
 
             dist = self.policy(obs)
             if batch["actions"][0].sum() == 1:
