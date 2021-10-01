@@ -529,7 +529,7 @@ class ModelPathCollector2(MdpPathCollector2):
             # Preprocess obs for agent then get action
             # o_for_agent = self._preprocess_obs_for_policy_fn(o)
             o_for_agent = model_state
-            a, agent_info = self._policy.get_action(o_for_agent,
+            a, agent_info = self._policy.get_action(o_for_agent[0],
                                                     **self._action_kwargs)
 
             # Perform postprocessing of obs
@@ -537,7 +537,7 @@ class ModelPathCollector2(MdpPathCollector2):
                 self._full_o_postprocess_func(self._env, self._policy, o)
 
             # Step through environment then render
-            next_o, r, d, env_info = self._env.step(copy.deepcopy(a))
+            next_o, r, d, env_info = self._env.step(copy.deepcopy(a)[0])
             self._episode_step_counter += 1
             if self._render:
                 self._env.render(**self._render_kwargs)
