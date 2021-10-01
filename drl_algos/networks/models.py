@@ -75,7 +75,7 @@ class Dreamer(Network):
         """TODO - Return model_states for behaviour learning."""
         self._num_train_steps += 1
         batch = utils.to_tensor_batch(batch, self.device)
-        self.train_on_batch(batch)
+        return self.train_on_batch(batch)
 
     def encode(self, batch):
         """Encode batch of sequences into model_states."""
@@ -131,6 +131,7 @@ class Dreamer(Network):
             stoch = deter = None
         else:
             _, stoch, deter = model_state
+
         stoch, deter = self._observe(obs, act, stoch, deter)
         latent_state = torch.cat((deter, stoch.reshape(-1, self.stoch*self.discrete)),
                                  dim=1).detach()
@@ -157,7 +158,11 @@ class Dreamer(Network):
             policy_dist = policy(latent_state)
             action, log_pi = policy_dist.rsample_and_logprob() # keep attached
             with torch.no_grad():
-                latent_state, deter, stoch, reward, gamma_logits = self._dream(action, stoch, deter)
+                latent_state, deter, stoch, reward, gamma_logits = self._dream(
+                    action,
+                    stoch,
+                    deter
+                )
                 gamma = torch.distributions.bernoulli.Bernoulli(
                     logits=gamma_logits.detach()
                 ).probs
@@ -183,13 +188,14 @@ class Dreamer(Network):
         gt.blank_stamp()
         self._n_train_steps_total += 1
 
-        loss, self.eval_statistics = self.compute_loss(batch)
+        model_states, loss, self.eval_statistics = self.compute_loss(batch)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.parameters(), self.grad_clip)
         self.optim.step()
         self.optim.zero_grad()
 
         gt.stamp('dreamer training', unique=False)
+        return model_states
 
     def compute_loss(self, batch):
         """TODO - return model_states for behaviour learning."""
@@ -199,9 +205,10 @@ class Dreamer(Network):
         actions = batch['actions']
         next_obs = batch['next_observations']
 
-        # Lists to hold calculated posteriors and hidden states
-        post_list = []
-        deter_list = []
+        # Lists to hold model_states
+        latent_states = []
+        stochs = []
+        deters = []
 
         # Process first observation on its own to initialise model
         post_logits, post_sample, prior_logits, obs_pred, reward_pred, gamma_pred, deter = self._train(
@@ -217,8 +224,12 @@ class Dreamer(Network):
             post_logits,
             prior_logits
         )
-        post_list.append(post_sample.detach())
-        deter_list.append(deter.detach())
+
+        latent_state = torch.cat((deter, post_sample.reshape(-1, self.stoch*self.discrete)),
+                                 dim=1)
+        latent_states.append(latent_state)
+        stochs.append(post_sample)
+        deters.append(deter)
 
         # Iterate through sequence
         sequence_len = len(rewards[0])
@@ -239,11 +250,21 @@ class Dreamer(Network):
                 post_logits,
                 prior_logits
             )
-            post_list.append(post_sample.detach())
-            deter_list.append(deter.detach())
+            latent_state = torch.cat((deter, post_sample.reshape(-1, self.stoch*self.discrete)),
+                                     dim=1)
+            latent_states.append(latent_state)
+            stochs.append(post_sample)
+            deters.append(deter)
         loss /= sequence_len
 
-        return loss, self.loss_model.get_stats()
+        latent_states = torch.stack(latent_states, dim=1)
+        latent_states = latent_states.reshape(-1, self.latent_size).detach()
+        stochs = torch.stack(stochs, dim=1)
+        stochs = stochs.reshape(-1, self.stoch_size).detach()
+        deters = torch.stack(deters, dim=1)
+        deters = deters.reshape(-1, self.deter_size).detach()
+
+        return (latent_states, stochs, deters), loss, self.loss_model.get_stats()
 
     def compute_deter(self, batch_size, act=None, stoch=None, deter=None):
         if deter is None:
@@ -317,10 +338,26 @@ class LossModel(nn.Module):
     def __init__(self, stoch, discrete, obs_scale=1, reward_scale=1,
                  gamma_scale=1, kl_scale=1.0, kl_balance=.8):
         """
-        TODO - needs tested (loss and stats)
-        gamma_scale - normally 1 but was 5 for pong (special case)
-        kl_scale - .1 for discrete, 1 for continuous control
-                 - recommended search range {.1, .3, 1, 3}
+        TODO:
+            - needs tested (loss and stats)
+                - especially kl_balancing
+            - include free nats
+                - kl_balance is meant to replace this, but it looks like they
+                still used this for a couple environments
+            - include free_avg parameters
+                - this implementation is equivalent to free_avg=True
+                - I don't think any of their tests used free_avg=False
+            - include forward parameter
+                - this implementation is equivalent to forward=False
+                - I don't think any implementations used forward=True and I'm
+                not clear what its benefit it
+
+        Tuning advice:
+            gamma_scale:
+                - normally 1 but was 5 for pong (special case best to ignore)
+            kl_scale:
+                - .1 for discrete, 1 for continuous control
+                - recommended search range {.1, .3, 1, 3}
         """
         super(LossModel, self).__init__()
         self.stoch = stoch
