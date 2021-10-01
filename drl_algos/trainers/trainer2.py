@@ -344,7 +344,7 @@ class DreamerAlgorithm2(Trainer2):
                 self.training_mode(True)
                 for _ in range(self.num_trains_per_train_loop):
                     train_data = self.replay_buffer.random_batch(
-                        self.batch_size
+                        self.batch_size,
                         self.sequence_len
                     )
                     model_states = self.model.train(train_data)
