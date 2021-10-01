@@ -28,6 +28,7 @@ class Trainer2(object):
         replay_buffer,
         logger,
         checkpoint_freq,
+        model=None,
     ):
         self.algo = algorithm
         self.expl_env = exploration_env
@@ -37,6 +38,7 @@ class Trainer2(object):
         self.replay_buffer = replay_buffer
         self.logger = logger
         self.checkpoint_freq = checkpoint_freq
+        self.model = model
 
         self._timestep = 0
         self._start_epoch = 1
@@ -64,6 +66,8 @@ class Trainer2(object):
         self.eval_path_collector.end_epoch(epoch)
         self.replay_buffer.end_epoch(epoch)
         self.algo.end_epoch(epoch)
+        if self.model is not None:
+            self.model.end_epoch(epoch)
 
         for post_epoch_func in self.post_epoch_funcs:
             post_epoch_func(self, epoch)
@@ -78,6 +82,8 @@ class Trainer2(object):
         #     snapshot['evaluation/' + k] = v
         for k, v in self.replay_buffer.get_snapshot().items():
             snapshot['replay_buffer/' + k] = v
+        for k, v in self.model.get_snapshot().items():
+            snapshot['model/' + k] = v
         return snapshot
 
     def _log_stats(self, epoch):
@@ -102,6 +108,17 @@ class Trainer2(object):
                 prefix="algorithm/"
             )
         )
+
+        """
+        Model
+        """
+        if self.model is not None:
+            stats.update(
+                utils.add_prefix(
+                    self.model.get_diagnostics(),
+                    prefix="model/"
+                )
+            )
 
         """
         Exploration
@@ -251,6 +268,107 @@ class BatchRLAlgorithm2(Trainer2):
 
     def to(self, device):
         self.algo.set_device(device)
+        self.eval_path_collector._policy.to(device)
+
+    def training_mode(self, mode):
+        for net in self.algo.get_networks():
+            net.train(mode)
+
+
+class DreamerAlgorithm2(Trainer2):
+
+    def __init__(
+            self,
+            model,
+            algorithm,
+            exploration_env,
+            evaluation_env,
+            exploration_path_collector,
+            evaluation_path_collector,
+            replay_buffer,
+            logger,
+            batch_size,
+            sequence_len,
+            imagination_horizon,
+            num_epochs,
+            num_eval_eps_per_epoch,
+            num_expl_steps_per_train_loop,
+            num_trains_per_train_loop,
+            num_train_loops_per_epoch=1,
+            min_num_steps_before_training=0,
+            checkpoint_freq=1,
+    ):
+        super().__init__(
+            algorithm=algorithm,
+            exploration_env=exploration_env,
+            evaluation_env=evaluation_env,
+            exploration_path_collector=exploration_path_collector,
+            evaluation_path_collector=evaluation_path_collector,
+            replay_buffer=replay_buffer,
+            logger=logger,
+            checkpoint_freq=checkpoint_freq,
+            model=model,
+        )
+
+        self.batch_size = batch_size
+        self.sequence_len = sequence_len
+        self.imagination_horizon = imagination_horizon
+        self.num_epochs = num_epochs
+        self.num_eval_eps_per_epoch = num_eval_eps_per_epoch
+        self.num_trains_per_train_loop = num_trains_per_train_loop
+        self.num_train_loops_per_epoch = num_train_loops_per_epoch
+        self.num_expl_steps_per_train_loop = num_expl_steps_per_train_loop
+        self.min_num_steps_before_training = min_num_steps_before_training
+
+    def _train(self):
+        if self.min_num_steps_before_training > 0:
+            init_expl_paths = self.expl_path_collector.collect_new_paths(
+                self.min_num_steps_before_training
+            )
+            self.replay_buffer.add_paths(init_expl_paths)
+            self.expl_path_collector.end_epoch(-1)
+
+        for epoch in gt.timed_for(
+                range(self._start_epoch, self.num_epochs),
+                save_itrs=True,
+        ):
+            for _ in range(self.num_train_loops_per_epoch):
+                new_expl_paths = self.expl_path_collector.collect_new_paths(
+                    self.num_expl_steps_per_train_loop
+                )
+                gt.stamp('exploration sampling', unique=False)
+
+                self.replay_buffer.add_paths(new_expl_paths)
+                gt.stamp('data storing', unique=False)
+
+                self.training_mode(True)
+                for _ in range(self.num_trains_per_train_loop):
+                    train_data = self.replay_buffer.random_batch(
+                        self.batch_size
+                        self.sequence_len
+                    )
+                    model_states = self.model.train(train_data)
+                    imagination_trajectories = self.model.dream(
+                        model_states,
+                        self.expl_path_collector._policy,
+                        self.imagination_horizon
+                    )
+                    self.algo.train(imagination_trajectories)
+                gt.stamp('training', unique=False)
+                self.training_mode(False)
+
+            self.eval_path_collector.collect_new_episodes(
+                self.num_eval_eps_per_epoch
+            )
+            gt.stamp('evaluation sampling')
+
+            self._timestep += (self.num_train_loops_per_epoch
+                               * self.num_expl_steps_per_train_loop)
+            self._end_epoch(epoch)
+
+    def to(self, device):
+        self.algo.set_device(device)
+        self.model.set_device(device)
         self.eval_path_collector._policy.to(device)
 
     def training_mode(self, mode):
