@@ -343,6 +343,9 @@ class Dreamer(Network):
             gamma_predictor=self.gamma_predictor,
         )
 
+    def end_epoch(self, epoch):
+        pass
+
 
 class LossModel(nn.Module):
 
