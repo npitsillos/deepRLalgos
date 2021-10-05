@@ -169,6 +169,12 @@ class TanhNormal(Distribution):
         self.normal_std = normal_std
         self.normal = MultivariateDiagonalNormal(normal_mean, normal_std)
 
+    def entropy(self):
+        """Note - implemented myself, unsure if this is correct but I don't see
+        why not.
+        """
+        return self.normal.entropy()
+
     def sample_n(self, n, return_pre_tanh_value=False):
         z = self.normal.sample_n(n)
         if return_pre_tanh_value:
@@ -300,7 +306,7 @@ class Discrete(Distribution):
     @property
     def probs(self):
         return self.categorical.distribution.probs
-    
+
     def mle_estimate(self):
         return torch.argmax(self.categorical.distribution.probs)
 
