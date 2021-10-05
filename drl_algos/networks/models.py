@@ -332,6 +332,17 @@ class Dreamer(Network):
         stats.update(self.eval_statistics)
         return stats
 
+    def get_snapshot(self):
+        return dict(
+            obs_encoder=self.obs_encoder,
+            repr_model=self.repr_model,
+            recur_model=self.recur_model,
+            transition_predictor=self.transition_predictor,
+            obs_decoder=self.obs_decoder,
+            reward_predictor=self.reward_predictor,
+            gamma_predictor=self.gamma_predictor,
+        )
+
 
 class LossModel(nn.Module):
 
