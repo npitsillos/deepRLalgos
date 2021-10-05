@@ -353,7 +353,7 @@ class DreamerAlgorithm2(Trainer2):
                         self.expl_path_collector._policy,
                         self.imagination_horizon
                     )
-                    self.algo.train(imagination_trajectories)
+                    self.algo.train(*imagination_trajectories)
                 gt.stamp('training', unique=False)
                 self.training_mode(False)
 
@@ -368,7 +368,7 @@ class DreamerAlgorithm2(Trainer2):
 
     def to(self, device):
         self.algo.set_device(device)
-        self.model.set_device(device)
+        self.model.to(device)
         self.eval_path_collector._policy.to(device)
 
     def training_mode(self, mode):
