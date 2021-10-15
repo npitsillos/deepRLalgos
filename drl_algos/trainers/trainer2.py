@@ -57,8 +57,9 @@ class Trainer2(object):
 
     def _end_epoch(self, epoch):
         snapshot = self._get_snapshot()
-        if epoch % self.checkpoint_freq == 0:
-            self.logger.save_params(self._timestep, snapshot)
+        if self.checkpoint_freq is not None and self.checkpoint_freq > 0:
+            if epoch % self.checkpoint_freq == 0:
+                self.logger.save_params(self._timestep, snapshot)
         gt.stamp('saving')
         self._log_stats(epoch)
 
@@ -82,8 +83,9 @@ class Trainer2(object):
         #     snapshot['evaluation/' + k] = v
         for k, v in self.replay_buffer.get_snapshot().items():
             snapshot['replay_buffer/' + k] = v
-        for k, v in self.model.get_snapshot().items():
-            snapshot['model/' + k] = v
+        if self.model is not None:
+            for k, v in self.model.get_snapshot().items():
+                snapshot['model/' + k] = v
         return snapshot
 
     def _log_stats(self, epoch):
