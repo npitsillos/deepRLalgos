@@ -109,6 +109,10 @@ class Delta(Distribution):
     def rsample(self):
         return self.value
 
+    def log_prob(self, value):
+        """I think log prob of a deterministic distribution is 0."""
+        return torch.tensor([0.0])
+
     @property
     def mean(self):
         return self.value
