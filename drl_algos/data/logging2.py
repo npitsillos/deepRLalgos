@@ -20,29 +20,29 @@ exp_dir = base_dir.joinpath(LOGGING_DIR)
 if not exp_dir.exists():
     exp_dir.mkdir()
 
+"""
+Changelog
+    - Now works with None values
+"""
+
 
 class Logger2(object):
     """Logger for recording and reporting training runs.
 
-    Three key functions:
-        log - logs statistics to csv files and the console
-        save_params - pickles training parameters within a checkpoint folder
-        save_config - saves training run configuration data to a json file
-
-    Note - tensorboard may complain about not being able to find the right
-           version of cuda but this warning can be ignored as tensorboard does
-           not need cuda. In future, may want to replace tensorboard.
-
     args:
         log_dir (String): directory within LOGGING_DIR (see above) for storing
-                          logs. The directory name will be timestamped making it
-                          semi-unique.
+            logs. The directory name will be timestamped making it semi-unique
+
+    Note:
+        - tensorflow may complain about not being able to find the right version
+        of cuda but this warning can be ignored as tensorboard does not need
+        cuda.
     """
 
     def __init__(self, log_dir):
         self.log_dir = exp_dir.joinpath(log_dir + "_" + self._get_exp_name())
 
-        self.log_dir.mkdir()
+        self.log_dir.mkdir(parents=True)
         self.checkpoint_dir = self.log_dir.joinpath("checkpoints")
         self.checkpoint_dir.mkdir()
         self.writer = SummaryWriter(self.log_dir)
@@ -51,11 +51,14 @@ class Logger2(object):
     def log(self, timestep, stats_dict):
         """Logs dictionary of stats under given timestep in a csv file.
 
-        Not designed to work with NaNs.
+        Important:
+            - Always call with the complete set of keys passing None for any
+            keys without a value. Calling with variable number of keys will
+            result in an incorrect csv file.
 
         Args:
-            timestep (int): timestep when log called
-            stats_dict (dict): dictionary to log
+            timestep (int): timestep in training run
+            stats_dict (dict): dictionary to log to
         """
         # Construct csv key-values
         keys = ["timestep"]
@@ -65,7 +68,8 @@ class Logger2(object):
             value = stats_dict[key]
             values.append(value)
             # Write to tensorboard
-            self.writer.add_scalar(key, value, timestep)
+            if value is not None:
+                self.writer.add_scalar(key, value, timestep)
 
         # Write to csv file
         self._write_csv(keys, values, self.file_path)
@@ -100,8 +104,8 @@ class Logger2(object):
         divider = "+"
         divider2 = "+"
         for key, value in zip(keys, values):
-            # Calculate column width and value type
-            if isinstance(value, int):
+            # Calculate column width and value type, int format works for None
+            if isinstance(value, int) or value is None:
                 isInt = True
                 valueLen = len(str(value))
             else:
@@ -147,7 +151,9 @@ class Logger2(object):
         for i in range(len(keys)):
             key = keys[i]
             value = values[i]
-            if value - int(value) == 0 and len(str(value)) < 10:
+            if value is None:
+                full_row = row + "%-10s |"
+            elif value - int(value) == 0 and len(str(value)) < 10:
                 if value < 0:
                     full_row = row + "%-10d |"
                 else:

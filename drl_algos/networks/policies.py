@@ -72,9 +72,47 @@ class DiscretePolicy(StochasticPolicy):
     def forward(self, obs):
         features = self.base(obs)
         logits = self.action_logits(features)
-        
+
         return Discrete(logits)
-    
+
+
+class DiscretePolicy2(StochasticPolicy):
+
+    def __init__(self, base, action_dim):
+        super().__init__()
+        self.base = base
+        self.action_dim = action_dim
+
+        self.action_logits = nn.Linear(self.base.output_size, self.action_dim)
+
+    def get_action(self, obs):
+        obs = utils.to_tensor(obs, self.device)
+        dist = self(obs)
+        action = dist.sample()
+        return torch.argmax(action).item(), {}
+
+    def forward(self, obs):
+        features = self.base(obs)
+        logits = self.action_logits(features)
+
+        return torch.distributions.OneHotCategoricalStraightThrough(logits=logits)
+
+
+class MakeDeterministic2(DiscretePolicy2):
+    def __init__(
+            self,
+            policy: StochasticPolicy,
+    ):
+        super().__init__(policy.base, policy.action_dim)
+        self.device = policy.device
+        self._policy = policy
+
+    def forward(self, *args, **kwargs):
+        dist = self._policy(*args, **kwargs)
+        # TODO - remove hardcoding
+        return Delta(dist.mean)
+
+
 class GaussianPolicy(StochasticPolicy):
 
     def __init__(
@@ -174,7 +212,7 @@ class SacMlpPolicy(GaussianPolicy):
         self,
         input_size,
         output_size,
-        hidden_sizes,
+        hidden_sizes=[256,256],
         layer_init="fanin",
         layer_activation=F.relu,
         init_mean=False,
@@ -191,6 +229,27 @@ class SacMlpPolicy(GaussianPolicy):
         )
 
 class MlpDiscretePolicy(DiscretePolicy):
+
+    def __init__(
+        self,
+        input_size,
+        output_size,
+        hidden_sizes,
+        layer_init="fanin",
+        layer_activation=F.elu
+    ):
+
+        super().__init__(
+            base=Mlp(
+                input_size=input_size,
+                layer_sizes=hidden_sizes,
+                layer_init=layer_init,
+                layer_activation=layer_activation
+            ),
+            action_dim=output_size
+        )
+
+class MlpDiscretePolicy2(DiscretePolicy2):
 
     def __init__(
         self,

@@ -14,6 +14,16 @@ import numpy as np
 from drl_algos.data.logging import logger
 from drl_algos.data import conf
 
+"""
+changelog
+    - to_tensor now checks for floats or ints and turns them into a tensor
+        - for handling discrete actions
+    - create_stats_ordered_dict when given empty list now returns keys with
+    None value instead of returning an empty dict
+        - to integrate with new logger, which can handle missing values but
+        needs all the keys every call
+"""
+
 
 def filter_activation_name(activation):
     """This function replaces the activation name with relu if it is not
@@ -82,6 +92,10 @@ def count_parameters(model):
 def to_tensor(np_array, device="cpu"):
     if isinstance(np_array, np.ndarray):
         return torch.from_numpy(np_array).float().to(device)
+    elif isinstance(np_array, int):
+        return torch.tensor(np_array).to(device)
+    elif isinstance(np_array, float):
+        return torch.tensor(np_array).float().to(device)
     return np_array.float().to(device)
 
 
@@ -159,9 +173,6 @@ def create_stats_ordered_dict(
     if isinstance(data, Number):
         return OrderedDict({name: data})
 
-    if len(data) == 0:
-        return OrderedDict()
-
     if isinstance(data, tuple):
         ordered_dict = OrderedDict()
         for number, d in enumerate(data):
@@ -173,24 +184,51 @@ def create_stats_ordered_dict(
         return ordered_dict
 
     if isinstance(data, list):
-        try:
-            iter(data[0])
-        except TypeError:
-            pass
+        if len(data) == 0:
+            data = []
         else:
-            data = np.concatenate(data)
+            try:
+                iter(data[0])
+            except TypeError:
+                pass
+            else:
+                data = np.concatenate(data)
 
     if (isinstance(data, np.ndarray) and data.size == 1
             and not always_show_all_stats):
         return OrderedDict({name: float(data)})
 
-    stats = OrderedDict([
-        (name + ' Mean', np.mean(data)),
-        (name + ' Std', np.std(data)),
-    ])
+    if len(data) == 0:
+        stats = OrderedDict([
+            (name + ' Mean', None),
+            (name + ' Std', None),
+        ])
+    else:
+        stats = OrderedDict([
+            (name + ' Mean', np.mean(data)),
+            (name + ' Std', np.std(data)),
+        ])
     if not exclude_max_min:
-        stats[name + ' Max'] = np.max(data)
-        stats[name + ' Min'] = np.min(data)
+        if len(data) == 0:
+            stats[name + ' Max'] = None
+            stats[name + ' Min'] = None
+        else:
+            stats[name + ' Max'] = np.max(data)
+            stats[name + ' Min'] = np.min(data)
+
+    return stats
+
+
+def get_stats(
+        name,
+        data,
+):
+    data = np.array(data)
+    stats = {}
+    stats[name + ' Mean'] = data.mean()
+    stats[name + ' Std'] = data.std()
+    stats[name + ' Max'] = data.max()
+    stats[name + ' Min'] = data.min()
     return stats
 
 

@@ -1,0 +1,28 @@
+Decided at last meeting to focus on the Dreamer approach:
+  First Technical Chapter - Dreamer for learning behaviours (continuous)
+  Second Technical Chapter - Dreamer for learning coordination (discrete)
+  Third Technical Chapter - Application (or something like that)
+
+Currently I have mostly implemented Dreamer's model based on the Pytorch version
+I found on github. It provided no proof of concept so I need to confirm it works.
+I believe I made some changes based on notes from the paper and from inspection
+of the tensorflow 2 codebase, mainly I changed the loss function.
+
+I tried to implement a SAC learner but as per my notes.txt I've decided to just
+use the DRL algorithm from dreamer.
+
+Side note - In one of Dreamer's github issues the author claims dreamer is
+off-policy. I don't think that is technically correct. While the model learns
+from trajectories gathered off-policy, the DRL algorithm learns on-policy within
+the imagination MDP.
+
+So my objectives are:
+  - Implement the model exactly as stated in the paper with reference to the
+  code. The main deviation I made was to replace the CNN encoder-decoder with an
+  MLP encoder-decoder. This should be removed.
+  - Implement the behaviour learning exactly as stated in the paper with ]
+  reference to the code.
+  - Bring it all together and test it on some image based environment.
+    - I'll need a Dreamer trainer
+    - Pendulum is probably a good environment. It's continuous, image based and
+    pretty simple. All I need is proof it can work.  

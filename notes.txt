@@ -1,0 +1,140 @@
+How should we utilise models?
+  - Initially, I thought it would be a good idea to replace the basic on-policy
+  RL learning with something smarter like SAC. However, I know don't think that
+  provides much of a benefit.
+    - On-policy is typically less brittle than off-policy. I think model-based
+    approaches can be more brittle since it can only really learn if the model
+    can approximate the environment accurately. Combining off-policy with a
+    model-based approach may be very brittle and painful to tune.
+      - On-policy methods are fairly easy to tune. For example, PPO generally
+      benefits from using a larger batch size and a slower learning rate. This
+      makes it less data-efficient but with latent imagination, changing these
+      hyperparameters does not directly impact how much real-world data is
+      required.
+      - When off-policy requires so much tuning is it really still fair to
+      say its more data-efficient than on-policy? If you include the data
+      required for tuning I wouldn't be surprised if on-policy is more
+      efficient.
+    - Model-based approaches alleviate the data efficiency problems of on-policy
+    methods. For example, with PPO you need to gather a large amount of data
+    every time you want to do a single update then that data is no longer
+    useable. With model-based approaches the data can be reused as the starting
+    point for imagination. Since the RL agent only learns on imagined
+    trajectories, there is no requirement to gather new real-world data before
+    each update.
+      - Note that PPO actually does do multiple epochs through each training
+      dataset by accounting for its off-policyness to make it more
+      data-efficient but at the cost of stability. When using a model there is
+      no reason to reuse stale data because it is cheap and easy to imagine new
+      on-policy trajectories.
+    - What really is the benefit of using off-policy? The main one I can think
+    of is the possibility to use the model to imagine off-policy trajectories.
+    How we practically utilise that I am not sure.
+    - It seems to me like PPO typically struggles on harder problems compared to
+    a well tuned SAC/TD3. However, a key benefit of our approach is that we
+    break difficult problems down into simple behaviours that need to be
+    choreographed.
+
+Overall, I think the a model-based on-policy approach is best suited to my
+needs. Model-based off-policy may be too much of a hassle to tune and its
+benefits is not clear, off-policy on its own is still a hassle to tune while
+on-policy on its own is data-inefficient which generally makes it too
+impractical for the real-world and even in simulation it may be impractical as
+the simulation grows in complexity. With a model we can imagine the large
+amounts of data needed for training a successful on-policy model by utilising
+off-policy data. A model is also more interpretable than a model-free approach.
+It seems like there isn't any research where they try to include more robotic
+information into the training of the model, instead they typically just decode
+images to do the representation learning. I think that experimenting with
+training the model to learn its joint and end-effector poses and velocties could
+be a simple but efficient technique for training the model to have more
+understanding of its body.
+
+I think alot of Dreamer could really be simplified or expanded upon
+  - Instead of encoding 50 sequences of 50, then performs a batch update using
+  all that data, why not encode many sequences then perform many minibatch
+  updates.
+    - It will be one potentially expensive encoding operation with the model but
+    then many minibatch updates can be done rather than one single update.
+    - It will help break temporal correlation.
+    - It some ways its similar to PPO
+      - PPO gathers a large amount of data, e.g. 32 thousand experiences, then
+      it performs minibatch updates through the dataset and passes through the
+      entire dataset multiple times.
+      - In our case, we just encode 32 thousand model states without having to
+      gather real-world data. Each minibatch is used for latent imagination so
+      the training data is always on-policy. I don't think there is any need to
+      ensure we go through the whole dataset or perform multiple epochs but
+      maybe it is worth considering.
+      - Personally, I imagine the RL training as just setting the following
+      parameters:
+        - How many sequences and what length?
+          - The larger the better
+        - What size of minibatch update?
+          - The larger the better
+        - How many updates before returning to exploration?
+      - After its performed however many updates it should then gather new
+      real-world data, train the model then train the RL and so on.
+    - Overall, I would hope this would make behaviour learning more stable.
+  - Is the complex multi-step learning objective really necessary?
+
+Side Note
+  - Considering the difficulty of the tasks that Dreamer aims to solve,
+  its batch size of 2500 is actually not that large.
+
+
+  """
+  Notes on Initialisation
+  The paper "HOW TO MAKE DEEP RL WORK IN PRACTICE", explored a number of
+  implementation choices, among them intilisations functions. The long and short
+  of it was that orthogonal seemed best for SAC and TD3, which uses ReLU
+  activations. Orthogonal, in theory, can be applied to any activation function
+  and it seems pretty good. This paper is nice because there aren't alot like it
+  in general, but especially for reinforcement learning.
+
+  The work focused on the effect of weight initilisation on early exploration,
+  finding that weight initialisation greatly changes the probability of sampling
+  different actions. A good weight initialisation scheme should have good coverage
+  of the action space whilst avoiding clipping at the extreme values (which causes
+  those actions to be oversampled).
+
+  Unlike most implementations I see, this work doesn't initialise the output layer
+  any differently than the hidden layers. Normally, the final layer is initialised
+  uniformally in a small range, e.g. 1e-3 in this implementation. The authors
+  didn't seem to compare to that scenario although I would suspect it should
+  explore worse. They mainly focused on the effect on policy exploration but it
+  seems they also initialised the critic with the same scheme. I would suspect
+  small uniform initilisation to be worse than orthogonal for early exploration but
+  I'm not sure about the critic. How they initialise the standard deviation layer
+  is confusing, they claim it was initialised to 1 but that doesn't seem to be
+  true. It doesn't seem learned so might need more experimenting.
+
+  To wrap up:
+      - Orthogonal seems good, but should test final layer initialisation as the
+        small initialisation is done for stability reasons but this seems to have
+        been ignored in paper experiments.
+      - I should do experiments on pendulum and maybe walker2d to compare fanin
+        and orthogonal in the following scenarios:
+        - Initialise every layer but small init for output layers (current approach using fanin)
+        - Initialise every layer but small init for critic and policy std output
+          layers (highest probability of being helpful)
+          - This may boost initial exploration
+          - May want to try initialising policy mean layer for tanh instead of
+            ReLU
+        - Initialise every layer but small init for policy std output only (and mean layer if above doesn't help)
+          - I suspect critic initialisation will not help
+          - May want to initialise for linear instead of relu
+        - Initialise every layer (except mean and critic if they don't help)
+          - I suspect std initialisation doesn't help but maybe
+          - Again, may want to initialise for tanh
+        - Initialise every layer (baseline if any of above don't prove helpful)
+          - May want to try initialising final layers for correct activation
+      - I suspect orthogonal and/or kaiming will work well for Dreamer
+        - It has less concerns about final layer initialisation because its
+          supervised so no need to run above experiments
+        - May want to initialise the final layers for their specific output
+          activation
+          - I'm not sure what elu's is, probably just use relu for gain
+          - Could try replace elu with relu and see if it works better with the
+            initialisation
+  """

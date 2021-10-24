@@ -7,6 +7,13 @@ from numbers import Number
 
 import numpy as np
 
+from drl_algos import utils
+
+"""changelog
+    - get_generic_episode_information can now handle empty lists but can't
+    do placeholders for env and agent info keys, that needs to be handled by
+    the path collector"""
+
 
 def list_of_dicts__to__dict_of_lists(lst):
     """
@@ -90,46 +97,52 @@ def get_generic_episode_information(episodes, stat_prefix=''):
     statistics = OrderedDict()
     returns = [sum(path["rewards"]) for path in episodes]
 
-    rewards = np.vstack([path["rewards"] for path in episodes])
-    statistics.update(create_stats_ordered_dict('Rewards', rewards,
-                                                stat_prefix=stat_prefix))
-    statistics.update(create_stats_ordered_dict('Returns', returns,
-                                                stat_prefix=stat_prefix))
+    if len(episodes) == 0:
+        rewards = []
+    else:
+        rewards = np.concatenate([path["rewards"] for path in episodes])
+    statistics.update(utils.create_stats_ordered_dict(
+        'Rewards', rewards, stat_prefix=stat_prefix))
+    statistics.update(utils.create_stats_ordered_dict(
+        'Returns', returns, stat_prefix=stat_prefix))
     actions = [path["actions"] for path in episodes]
-    if len(actions[0].shape) == 1:
+    if len(episodes) == 0:
+        actions = []
+    elif len(actions[0].shape) == 1:
         actions = np.hstack([path["actions"] for path in episodes])
     else:
         actions = np.vstack([path["actions"] for path in episodes])
-    statistics.update(create_stats_ordered_dict(
+    statistics.update(utils.create_stats_ordered_dict(
         'Actions', actions, stat_prefix=stat_prefix
     ))
     statistics['Num Episodes'] = len(episodes)
 
     for info_key in ['env_infos', 'agent_infos']:
-        if info_key in episodes[0]:
-            all_env_infos = [
-                list_of_dicts__to__dict_of_lists(p[info_key])
-                for p in episodes
-            ]
-            for k in all_env_infos[0].keys():
-                final_ks = np.array([info[k][-1] for info in all_env_infos])
-                first_ks = np.array([info[k][0] for info in all_env_infos])
-                all_ks = np.concatenate([info[k] for info in all_env_infos])
-                statistics.update(create_stats_ordered_dict(
-                    stat_prefix + k,
-                    final_ks,
-                    stat_prefix='{}/final/'.format(info_key),
-                ))
-                statistics.update(create_stats_ordered_dict(
-                    stat_prefix + k,
-                    first_ks,
-                    stat_prefix='{}/initial/'.format(info_key),
-                ))
-                statistics.update(create_stats_ordered_dict(
-                    stat_prefix + k,
-                    all_ks,
-                    stat_prefix='{}/'.format(info_key),
-                ))
+        if len(episodes) > 0:
+            if info_key in episodes[0]:
+                all_env_infos = [
+                    list_of_dicts__to__dict_of_lists(p[info_key])
+                    for p in episodes
+                ]
+                for k in all_env_infos[0].keys():
+                    final_ks = np.array([info[k][-1] for info in all_env_infos])
+                    first_ks = np.array([info[k][0] for info in all_env_infos])
+                    all_ks = np.concatenate([info[k] for info in all_env_infos])
+                    statistics.update(utils.create_stats_ordered_dict(
+                        stat_prefix + k,
+                        final_ks,
+                        stat_prefix='{}/final/'.format(info_key),
+                    ))
+                    statistics.update(utils.create_stats_ordered_dict(
+                        stat_prefix + k,
+                        first_ks,
+                        stat_prefix='{}/initial/'.format(info_key),
+                    ))
+                    statistics.update(utils.create_stats_ordered_dict(
+                        stat_prefix + k,
+                        all_ks,
+                        stat_prefix='{}/'.format(info_key),
+                    ))
 
     return statistics
 

@@ -30,6 +30,9 @@ class Distribution(TorchDistribution):
     def get_diagnostics(self):
         return {}
 
+    def get_metrics(self):
+        return {}
+
 
 class TorchDistributionWrapper(Distribution):
 
@@ -274,6 +277,13 @@ class TanhNormal(Distribution):
             utils.to_numpy(torch.log(self.normal_std)),
         ))
         return stats
+
+    def get_metrics(self):
+        metrics = {}
+        metrics['mean'] = utils.to_numpy(self.mean)
+        metrics['normal/std'] = utils.to_numpy(self.normal_std)
+        metrics['normal/log_std'] = utils.to_numpy(torch.log(self.normal_std))
+        return metrics
 
 
 class CategoricalDistribution(TorchDistributionWrapper):

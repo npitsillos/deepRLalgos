@@ -2,9 +2,20 @@ import copy
 from collections import deque, OrderedDict
 
 import numpy as np
+import torch.distributions as td # CHANGELOG - Added for decoder
 
+from drl_algos.networks.policies import DiscretePolicy2
 from drl_algos.data.rollouts import rollout
 from drl_algos import utils, eval_util
+
+"""
+Changelog
+    - ModelPathCollector now uses the new model implementation
+        - calls get_latent_state(model_state)
+        - removed hardcoded converstion to one_hot_encoding
+            - observe handles one_hot_encoding the action
+"""
+
 
 
 class MdpPathCollector(object):
@@ -180,6 +191,7 @@ class MdpPathCollector2(object):
         self._epoch_episodes = deque(maxlen=self._max_episodes_saved)
         self._episode_step_counter = 0
         self._last_obs = None
+        self._done = True
         self._num_steps_total = 0
         self._num_episodes_total = 0
 
@@ -354,8 +366,9 @@ class MdpPathCollector2(object):
             if d:
                 break
 
-        # Track final observation for next rollout call
+        # Track final observation and done for next rollout call
         self._last_obs = o
+        self._done = d
 
         # TODO - avoid needing to convert to numpy
         actions = np.array(actions)
@@ -444,6 +457,7 @@ class MdpPathCollector2(object):
     def _reset(self):
         self._policy.reset()
         self._last_obs = self._env.reset()
+        self._done = False
         if self._reset_callback:
             self._reset_callback(self._env, self._policy, self._last_obs)
         if self._render:
@@ -455,8 +469,8 @@ class MdpPathCollector2(object):
         # If reached max_episode_length then should reset
         if self._episode_step_counter == self._max_episode_length:
             return True
-        # If no last_obs, i.e., very first episode, then should reset
-        if self._last_obs is None:
+        # If last episode ended then should reset
+        if self._done is True:
             return True
         return False
 
@@ -477,6 +491,7 @@ class ModelPathCollector2(MdpPathCollector2):
             policy,
             model,
             max_episode_length,
+            deterministic=False,
             ignore_timeout_terminals=False,
             max_episodes_saved=None,
             render=False,
@@ -504,6 +519,7 @@ class ModelPathCollector2(MdpPathCollector2):
             full_o_postprocess_func=full_o_postprocess_func,
         )
         self._model = model
+        self._deterministic = deterministic
 
     def _rollout(
         self,
@@ -528,8 +544,8 @@ class ModelPathCollector2(MdpPathCollector2):
 
             # Preprocess obs for agent then get action
             # o_for_agent = self._preprocess_obs_for_policy_fn(o)
-            o_for_agent = model_state
-            a, agent_info = self._policy.get_action(o_for_agent[0],
+            o_for_agent = self._model.get_latent_state(model_state)
+            a, agent_info = self._policy.get_action(o_for_agent,
                                                     **self._action_kwargs)
 
             # Perform postprocessing of obs
@@ -537,7 +553,7 @@ class ModelPathCollector2(MdpPathCollector2):
                 self._full_o_postprocess_func(self._env, self._policy, o)
 
             # Step through environment then render
-            next_o, r, d, env_info = self._env.step(copy.deepcopy(a)[0])
+            next_o, r, d, env_info = self._env.step(copy.deepcopy(a))
             self._episode_step_counter += 1
             if self._render:
                 self._env.render(**self._render_kwargs)
@@ -552,15 +568,21 @@ class ModelPathCollector2(MdpPathCollector2):
             env_infos.append(env_info)
             path_length += 1
             o = next_o
-            model_state = self._model.observe(o, a, model_state)
+            model_state = self._model.observe(
+                next_o,
+                a,
+                model_state,
+                self._deterministic
+            )
 
             # If terminal then end rollout
             if d:
                 break
 
         # Track final observation for next rollout call
-        self._last_obs = o
+        self._last_obs = next_o
         self._last_model_state = model_state
+        self._done = d
 
         # TODO - avoid needing to convert to numpy
         actions = np.array(actions)
@@ -600,4 +622,158 @@ class ModelPathCollector2(MdpPathCollector2):
 
     def _reset(self):
         super()._reset()
-        self._last_model_state = self._model.observe(self._last_obs)
+        self._last_model_state = self._model.observe(
+            self._last_obs,
+            sample=self._deterministic
+        )
+
+
+class ModelPathCollector2Decoder(MdpPathCollector2):
+    """This is a hacky version just used to decoded the observations from the
+    model rather than use the latent space
+    """
+
+    def __init__(
+            self,
+            env,
+            policy,
+            model,
+            max_episode_length,
+            deterministic=False,
+            ignore_timeout_terminals=False,
+            max_episodes_saved=None,
+            render=False,
+            render_kwargs=None,
+            save_env_in_snapshot=True,
+            reset_callback=None,
+            preprocess_obs_for_policy_fn=None,
+            action_kwargs=None,
+            return_dict_obs=False,
+            full_o_postprocess_func=None,
+    ):
+        super().__init__(
+            env=env,
+            policy=policy,
+            max_episode_length=max_episode_length,
+            ignore_timeout_terminals=ignore_timeout_terminals,
+            max_episodes_saved=max_episodes_saved,
+            render=render,
+            render_kwargs=render_kwargs,
+            save_env_in_snapshot=save_env_in_snapshot,
+            reset_callback=reset_callback,
+            preprocess_obs_for_policy_fn=preprocess_obs_for_policy_fn,
+            action_kwargs=action_kwargs,
+            return_dict_obs=return_dict_obs,
+            full_o_postprocess_func=full_o_postprocess_func,
+        )
+        self._model = model
+        self._deterministic = deterministic
+
+    def _rollout(
+        self,
+        max_path_length
+    ):
+        raw_obs = []
+        raw_next_obs = []
+        observations = []
+        actions = []
+        rewards = []
+        terminals = []
+        agent_infos = []
+        env_infos = []
+        next_observations = []
+        path_length = 0
+
+        # Perform rollout starting from last seen model_state
+        model_state = self._last_model_state
+        o = self._last_obs
+        while path_length < max_path_length:
+            raw_obs.append(o)
+
+            # Preprocess obs for agent then get action
+            # o_for_agent = self._preprocess_obs_for_policy_fn(o)
+            state = self._model.get_latent_state(model_state)
+            obs_loc = self._model.obs_decoder(state)
+            obs_dist = td.Independent(td.Normal(obs_loc, 1), 1)
+            o_for_agent = obs_dist.mean
+            a, agent_info = self._policy.get_action(o_for_agent,
+                                                    **self._action_kwargs)
+
+            # Perform postprocessing of obs
+            if self._full_o_postprocess_func:
+                self._full_o_postprocess_func(self._env, self._policy, o)
+
+            # Step through environment then render
+            next_o, r, d, env_info = self._env.step(copy.deepcopy(a))
+            self._episode_step_counter += 1
+            if self._render:
+                self._env.render(**self._render_kwargs)
+
+            observations.append(o)
+            rewards.append(r)
+            terminals.append(d)
+            actions.append(a)
+            next_observations.append(next_o)
+            raw_next_obs.append(next_o)
+            agent_infos.append(agent_info)
+            env_infos.append(env_info)
+            path_length += 1
+            o = next_o
+            model_state = self._model.observe(
+                next_o,
+                a,
+                model_state,
+                self._deterministic
+            )
+
+            # If terminal then end rollout
+            if d:
+                break
+
+        # Track final observation for next rollout call
+        self._last_obs = next_o
+        self._last_model_state = model_state
+        self._done = d
+
+        # TODO - avoid needing to convert to numpy
+        actions = np.array(actions)
+        if len(actions.shape) == 1:
+            actions = np.expand_dims(actions, 1).tolist()
+        else:
+            actions = actions.tolist()
+        observations = observations
+        next_observations = next_observations
+        if self._return_dict_obs:
+            observations = raw_obs
+            next_observations = raw_next_obs
+        # TODO - avoid needing to convert to numpy
+        rewards = np.array(rewards)
+        if len(rewards.shape) == 1:
+            rewards = rewards.reshape(-1, 1).tolist()
+        else:
+            rewards = reward.tolist()
+        # TODO - avoid needing to convert to numpy
+        terminals = np.array(terminals).reshape(-1, 1).tolist()
+        return dict(
+            observations=observations,
+            actions=actions, # no longer np array
+            rewards=rewards,
+            next_observations=next_observations,
+            terminals=terminals,
+            agent_infos=agent_infos,
+            env_infos=env_infos,
+            full_observations=raw_obs,
+            full_next_observations=raw_obs,
+        ), path_length
+
+    def get_snapshot(self):
+        snapshot_dict = super().get_snapshot()
+        snapshot_dict["model"] = self._model
+        return snapshot_dict
+
+    def _reset(self):
+        super()._reset()
+        self._last_model_state = self._model.observe(
+            self._last_obs,
+            sample=self._deterministic
+        )

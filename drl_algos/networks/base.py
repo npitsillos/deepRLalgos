@@ -5,6 +5,16 @@ import torch.nn.functional as F
 
 from drl_algos import utils
 
+"""
+Changelog
+    - Network will now update the self.device on all its attributes that are
+    networks
+        - calls their to method forcing them to also check their own attributes
+        - don't think it should add much overhead, especially since it should
+        only ever need to be called once per network
+    - to method now checks for torch.device as input argument and correctly
+    tracks it
+"""
 
 class Network(nn.Module):
     """Wraps torch nn.Module to provide device type tracking."""
@@ -17,15 +27,25 @@ class Network(nn.Module):
         """Override super method to track device."""
         if kwargs.get("device") is not None:
             self.device = kwargs.get("device")
-        elif isinstance(args[0], str):
+        elif isinstance(args[0], str) or isinstance(args[0], torch.device):
             self.device = args[0]
+        self._update_attributes()
         return super().to(*args, **kwargs)
 
     def cuda(self, device=0):
         """Override super method to track device."""
         self.device = "cuda:" + str(device)
+        self._update_attributes()
         return super().cuda(device)
 
+    def _update_attributes(self):
+        attribute_names = [
+            name for name in dir(self) if name[:2] != '__' and name[-2:] != '__'
+        ]
+        for attribute_name in attribute_names:
+            attribute = getattr(self, attribute_name)
+            if isinstance(attribute, Network):
+                attribute.to(self.device)
 
 class Base(Network):
     """High level class defining network architecture."""

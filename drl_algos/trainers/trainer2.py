@@ -1,3 +1,4 @@
+import math
 import collections
 from collections import OrderedDict
 
@@ -5,6 +6,11 @@ import numpy as np
 import gtimer as gt
 
 from drl_algos import utils, eval_util
+
+"""
+Changelog
+    - adding save save best model and save final model
+"""
 
 
 class Trainer2(object):
@@ -40,6 +46,7 @@ class Trainer2(object):
         self.checkpoint_freq = checkpoint_freq
         self.model = model
 
+        self.best_eval = -math.inf
         self._timestep = 0
         self._start_epoch = 1
         self.post_epoch_funcs = []
@@ -47,6 +54,8 @@ class Trainer2(object):
     def train(self, start_epoch=1):
         self._start_epoch = start_epoch
         self._train()
+        snapshot = self._get_snapshot()
+        self.logger.save_params("final", snapshot)
 
     def _train(self):
         raise NotImplementedError
@@ -56,11 +65,10 @@ class Trainer2(object):
         pass
 
     def _end_epoch(self, epoch):
-        snapshot = self._get_snapshot()
         if self.checkpoint_freq is not None and self.checkpoint_freq > 0:
             if epoch % self.checkpoint_freq == 0:
+                snapshot = self._get_snapshot()
                 self.logger.save_params(self._timestep, snapshot)
-        gt.stamp('saving')
         self._log_stats(epoch)
 
         self.expl_path_collector.end_epoch(epoch)
@@ -157,6 +165,11 @@ class Trainer2(object):
                     prefix="evaluation/"
                 )
             )
+        eval_returns = stats["evaluation/Returns Mean"]
+        if eval_returns > self.best_eval:
+            self.best_eval = eval_returns
+        snapshot = self._get_snapshot()
+        self.logger.save_params("best", snapshot)
 
         """
         Misc
@@ -237,6 +250,7 @@ class BatchRLAlgorithm2(Trainer2):
             )
             self.replay_buffer.add_paths(init_expl_paths)
             self.expl_path_collector.end_epoch(-1)
+            self._timestep += self.min_num_steps_before_training
 
         for epoch in gt.timed_for(
                 range(self._start_epoch, self.num_epochs),
@@ -329,6 +343,7 @@ class DreamerAlgorithm2(Trainer2):
             )
             self.replay_buffer.add_paths(init_expl_paths)
             self.expl_path_collector.end_epoch(-1)
+            self._timestep += self.min_num_steps_before_training
 
         for epoch in gt.timed_for(
                 range(self._start_epoch, self.num_epochs),
@@ -355,6 +370,7 @@ class DreamerAlgorithm2(Trainer2):
                         self.expl_path_collector._policy,
                         self.imagination_horizon
                     )
+
                     self.algo.train(*imagination_trajectories)
                 gt.stamp('training', unique=False)
                 self.training_mode(False)
@@ -371,6 +387,102 @@ class DreamerAlgorithm2(Trainer2):
     def to(self, device):
         self.algo.set_device(device)
         self.model.to(device)
+        self.eval_path_collector._policy.to(device)
+
+    def training_mode(self, mode):
+        # TODO - should also do this for the model
+        for net in self.algo.get_networks():
+            net.train(mode)
+
+
+class DreamerTestAlgorithm2(Trainer2):
+
+    def __init__(
+            self,
+            algorithm,
+            exploration_env,
+            evaluation_env,
+            exploration_path_collector,
+            evaluation_path_collector,
+            replay_buffer,
+            logger,
+            batch_size,
+            sequence_len,
+            num_epochs,
+            num_eval_eps_per_epoch,
+            num_expl_steps_per_train_loop,
+            num_trains_per_train_loop,
+            num_train_loops_per_epoch=1,
+            checkpoint_freq=1,
+    ):
+        super().__init__(
+            algorithm=algorithm,
+            exploration_env=exploration_env,
+            evaluation_env=evaluation_env,
+            exploration_path_collector=exploration_path_collector,
+            evaluation_path_collector=evaluation_path_collector,
+            replay_buffer=replay_buffer,
+            logger=logger,
+            checkpoint_freq=checkpoint_freq,
+        )
+
+        self.batch_size = batch_size
+        self.sequence_len = sequence_len
+        self.num_epochs = num_epochs
+        self.num_eval_eps_per_epoch = num_eval_eps_per_epoch
+        self.num_trains_per_train_loop = num_trains_per_train_loop
+        self.num_train_loops_per_epoch = num_train_loops_per_epoch
+        self.num_expl_steps_per_train_loop = num_expl_steps_per_train_loop
+
+    def _train(self):
+        for epoch in gt.timed_for(
+                range(self._start_epoch, self.num_epochs),
+                save_itrs=True,
+        ):
+            for _ in range(self.num_train_loops_per_epoch):
+                new_expl_paths = self.expl_path_collector.collect_new_paths(
+                    self.num_expl_steps_per_train_loop
+                )
+                gt.stamp('exploration sampling', unique=False)
+
+                self.replay_buffer.add_paths(new_expl_paths)
+                gt.stamp('data storing', unique=False)
+
+                self.training_mode(True)
+                for _ in range(self.num_trains_per_train_loop):
+                    train_data = self.replay_buffer.random_batch(
+                        self.batch_size,
+                        self.sequence_len
+                    )
+
+                    # Do post processing here then pass to algorithm as if it
+                    # were output from model.dream()
+                    states = train_data["observations"]
+                    actions = train_data["actions"]
+                    rewards = train_data["rewards"]
+                    gammas = -train_data['terminals'] + 1
+
+                    model_states = self.model.train(train_data)
+                    imagination_trajectories = self.model.dream(
+                        model_states,
+                        self.expl_path_collector._policy,
+                        self.imagination_horizon
+                    )
+                    self.algo.train(*imagination_trajectories)
+                gt.stamp('training', unique=False)
+                self.training_mode(False)
+
+            self.eval_path_collector.collect_new_episodes(
+                self.num_eval_eps_per_epoch
+            )
+            gt.stamp('evaluation sampling')
+
+            self._timestep += (self.num_train_loops_per_epoch
+                               * self.num_expl_steps_per_train_loop)
+            self._end_epoch(epoch)
+
+    def to(self, device):
+        self.algo.set_device(device)
         self.eval_path_collector._policy.to(device)
 
     def training_mode(self, mode):

@@ -4,6 +4,17 @@ import warnings
 from gym.spaces import Discrete, Box
 import numpy as np
 
+"""
+Notes:
+    - This doesn't seem to really work with images
+
+Changelog for commit:
+    - I updated the documentation for EpisodicReplayBuffer to notify that the
+    sampling function does NOT work for strict_len=False
+    - I changed EpisodicReplayBuffer to return the data as
+    [Seq_Len, Batch_size, ...] instead of [Batch_Size, Seq_Len, ...]
+        - changed this back for now, to revert add dim=1 to np.stack
+"""
 
 def get_dim(space):
     if isinstance(space, Box):
@@ -46,15 +57,25 @@ class ReplayBuffer(object):
         self._action_dim = get_dim(env.action_space)
         self._max_replay_buffer_size = max_replay_buffer_size
 
-        # Create local 2D buffers
-        self._observations = np.zeros((max_replay_buffer_size,
-                                       self._observation_dim))
-        self._next_obs = np.zeros((max_replay_buffer_size,
-                                   self._observation_dim))
+        # CHANGELOG - this works with images and should still work with low state
+        #             box observations which is generally all we use anyway
+        shape = (max_replay_buffer_size,) + env.observation_space.shape
+        self._observations = np.zeros(shape)
+        self._next_obs = np.zeros(shape)
         self._actions = np.zeros((max_replay_buffer_size, self._action_dim))
 
         self._rewards = np.zeros((max_replay_buffer_size, 1))
         self._terminals = np.zeros((max_replay_buffer_size, 1), dtype='uint8')
+
+        # Create local 2D buffers
+        # self._observations = np.zeros((max_replay_buffer_size,
+        #                                self._observation_dim))
+        # self._next_obs = np.zeros((max_replay_buffer_size,
+        #                            self._observation_dim))
+        # self._actions = np.zeros((max_replay_buffer_size, self._action_dim))
+        #
+        # self._rewards = np.zeros((max_replay_buffer_size, 1))
+        # self._terminals = np.zeros((max_replay_buffer_size, 1), dtype='uint8')
 
         # Set up env infos
         self._env_infos = {}
@@ -277,6 +298,14 @@ class EpisodicReplayBuffer(ReplayBuffer):
         sequence_len=1,
         strict_sequence_len=True
     ):
+        """
+        TODO - This doesn't support strict_sequence_len=False because you
+        cannot stack arrays which aren't the same shape. Workaround is either
+        to manually construct array (at which point it is effectively equivalent
+        to a python list in terms of supported functions) or to mask the missing
+        values. Would probably need to track the mask so that the extra values
+        don't end up having unintended consequences.
+        """
         # If sequence length is 1 then return default batch
         if sequence_len == 1:
             return super().random_batch(batch_size=batch_size)
@@ -339,11 +368,11 @@ class EpisodicReplayBuffer(ReplayBuffer):
             #     sequence[key] = self._env_infos[key][indices]
 
         batch = dict(
-            observations=np.stack(obs_sequences),
-            actions=np.stack(action_sequences),
-            rewards=np.stack(reward_sequences),
-            terminals=np.stack(terminal_sequences),
-            next_observations=np.stack(next_obs_sequences),
+            observations=np.stack(obs_sequences, 1),
+            actions=np.stack(action_sequences, 1),
+            rewards=np.stack(reward_sequences, 1),
+            terminals=np.stack(terminal_sequences, 1),
+            next_observations=np.stack(next_obs_sequences, 1),
         )
         return batch
 

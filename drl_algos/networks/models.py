@@ -44,6 +44,14 @@ class Dreamer(Network):
         self.reward_predictor = reward_predictor # (hidden_t, stoch_t) -> reward_t
         self.gamma_predictor = gamma_predictor # (hidden_t, stoch_t) -> gamma_t
 
+        self.state_action_encoder = Mlp(
+            input_size=repr_model.output_size + num_actions,
+            layer_sizes=[recur_model.output_size],
+            layer_init="orthogonal",
+            layer_activation=F.elu,
+            act_last_layer=True,
+        )
+
         # Dreamer parameters
         self.num_obs = num_obs
         self.num_actions = num_actions
@@ -119,7 +127,7 @@ class Dreamer(Network):
             gammas = torch.cat(gammas, dim=1).reshape(-1,1).detach()
             return (latent_states, stochs, deters), actions, rewards, gammas
 
-    def observe(self, obs, act=None, model_state=None):
+    def observe(self, obs, act=None, model_state=None, sample=True):
         """Observes an environment transition."""
         obs = utils.to_tensor(obs, self.device)
         if obs.dim() == 1:
@@ -132,7 +140,7 @@ class Dreamer(Network):
         else:
             _, stoch, deter = model_state
 
-        stoch, deter = self._observe(obs, act, stoch, deter)
+        stoch, deter = self._observe(obs, act, stoch, deter, sample)
         latent_state = torch.cat((deter, stoch.reshape(-1, self.stoch*self.discrete)),
                                  dim=1).detach()
         return (latent_state, stoch, deter)
@@ -156,7 +164,18 @@ class Dreamer(Network):
         gammas = [gamma]
         for i in range(horizon):
             policy_dist = policy(latent_state)
-            action, log_pi = policy_dist.rsample_and_logprob() # keep attached
+            # CHANGE LOG - with discrete actions rsample not guarenteed
+            # action, log_pi = policy_dist.rsample_and_logprob() # keep attached
+            # TODO - I've hacked this part to make it work for Discrete distributions
+            #        The implementation for sample indexes the array but that doesn't work when your
+            #        your sampling multiple actions
+            #        I'll need to update get_action in policy to make it work without
+            action = policy_dist.categorical.distribution.sample()
+            # TODO - below is just a hack to make it work for environments with
+            #        2 discrete actions, i.e., CartPole, this should be made more
+            #        general
+            log_pi = policy_dist.log_prob(action)
+            action = F.one_hot(action, 2)
             with torch.no_grad():
                 latent_state, deter, stoch, reward, gamma_logits = self._dream(
                     action,
@@ -172,7 +191,18 @@ class Dreamer(Network):
             rewards.append(reward)
             gammas.append(gamma)
         policy_dist = policy(latent_state)
-        action, log_pi = policy_dist.rsample_and_logprob() # keep attached
+        # CHANGE LOG - with discrete actions rsample not guarenteed
+        # action, log_pi = policy_dist.rsample_and_logprob() # keep attached
+        # TODO - I've hacked this part to make it work for Discrete distributions
+        #        The implementation for sample indexes the array but that doesn't work when your
+        #        your sampling multiple actions
+        #        I'll need to update get_action in policy to make it work without
+        action = policy_dist.categorical.distribution.sample()
+        # TODO - below is just a hack to make it work for environments with
+        #        2 discrete actions, i.e., CartPole, this should be made more
+        #        general
+        log_pi = policy_dist.log_prob(action)
+        action = F.one_hot(action, 2)
         actions.append(action)
         log_pis.append(log_pi.unsqueeze(-1))
 
@@ -189,10 +219,10 @@ class Dreamer(Network):
         self._n_train_steps_total += 1
 
         model_states, loss, self.eval_statistics = self.compute_loss(batch)
+        self.optim.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.parameters(), self.grad_clip)
         self.optim.step()
-        self.optim.zero_grad()
 
         gt.stamp('dreamer training', unique=False)
         return model_states
@@ -216,10 +246,10 @@ class Dreamer(Network):
         )
         loss = self.loss_model(
             obs[:,0],
-            rewards[:,0], # just a placeholder value, no reward for first state
+            None,
             gammas[:,0], # first state is never terminal so this is okay
             obs_pred,
-            0, # don't train reward model
+            None,
             gamma_pred,
             post_logits,
             prior_logits
@@ -271,7 +301,8 @@ class Dreamer(Network):
             deter = torch.zeros((batch_size, self.recur_model.output_size))
             deter = deter.to(self.device)
         else:
-            deter = self.recur_model(torch.cat((stoch.reshape(-1, self.stoch*self.discrete), act), dim=1), deter)
+            embed = self.state_action_encoder(torch.cat((stoch.reshape(-1, self.stoch*self.discrete), act), dim=1))
+            deter = self.recur_model(embed, deter)
         return deter
 
     def encode_repr(self, obs, deter):
@@ -283,22 +314,33 @@ class Dreamer(Network):
         return post_logits, post_sample
 
     def compute_post_sample(self, post_logits):
-        post_sample = torch.distributions.one_hot_categorical.OneHotCategorical(
+        # CHANGELOG - use dist.probs instead of softmax on logits
+        post_dist = torch.distributions.one_hot_categorical.OneHotCategorical(
             logits=post_logits.reshape(-1, self.stoch, self.discrete)
-        ).sample()
-        z_probs = torch.softmax(post_logits.reshape(-1, self.stoch, self.discrete), dim=-1)
-        return post_sample + z_probs - z_probs.detach()
+        )
+        post_sample = post_dist.sample() + post_dist.probs - post_dist.probs.detach()
+        return post_sample
+        # post_sample = torch.distributions.one_hot_categorical.OneHotCategorical(
+        #     logits=post_logits.reshape(-1, self.stoch, self.discrete)
+        # ).sample()
+        # z_probs = torch.softmax(post_logits.reshape(-1, self.stoch, self.discrete), dim=-1)
+        # return post_sample + z_probs - z_probs.detach()
 
-    def _observe(self, obs, act=None, stoch=None, deter=None):
+    def _observe(self, obs, act=None, stoch=None, deter=None, sample=True):
         with torch.no_grad():
             features = self.obs_encoder(obs)
             features = features.reshape(-1, self.obs_encoder.output_size)
             deter = self.compute_deter(obs.shape[0], act, stoch, deter)
             input = torch.cat((features, deter), dim=1)
             post_logits = self.repr_model(input)
-            post_sample = torch.distributions.one_hot_categorical.OneHotCategorical(
+            post_dist = torch.distributions.one_hot_categorical.OneHotCategorical(
                 logits=post_logits.reshape(-1, self.stoch, self.discrete)
-            ).sample() # no straight-through gradient
+            )
+            if sample:
+                post_sample = post_dist.sample()
+            else:
+                post_sample = F.one_hot(post_dist.mean.argmax(dim=2),
+                                        self.discrete)
             return post_sample.detach(), deter.detach()
 
     def _dream(self, act, stoch, deter):
@@ -350,7 +392,7 @@ class Dreamer(Network):
 class LossModel(nn.Module):
 
     def __init__(self, stoch, discrete, obs_scale=1, reward_scale=1,
-                 gamma_scale=1, kl_scale=1.0, kl_balance=.8):
+                 gamma_scale=5, kl_scale=.1, kl_balance=.8):
         """
         TODO:
             - needs tested (loss and stats)
@@ -367,8 +409,6 @@ class LossModel(nn.Module):
                 not clear what its benefit it
 
         Tuning advice:
-            gamma_scale:
-                - normally 1 but was 5 for pong (special case best to ignore)
             kl_scale:
                 - .1 for discrete, 1 for continuous control
                 - recommended search range {.1, .3, 1, 3}
@@ -385,15 +425,18 @@ class LossModel(nn.Module):
 
     def forward(self, obs, reward, gamma, obs_pred, reward_pred, gamma_logits,
                 post_logits, prior_logits):
+        # CHANGELOG - no longer calculate reward loss if reward pred not passed
+
         # Create distributions
         obs_dist = torch.distributions.normal.Normal(
             loc=obs_pred,
             scale=1.0
         )
-        reward_dist = torch.distributions.normal.Normal(
-            loc=reward_pred,
-            scale=1.0
-        )
+        if reward_pred is not None:
+            reward_dist = torch.distributions.normal.Normal(
+                loc=reward_pred,
+                scale=1.0
+            )
         gamma_dist = torch.distributions.bernoulli.Bernoulli(
             logits=gamma_logits
         )
@@ -411,22 +454,41 @@ class LossModel(nn.Module):
         )
 
         # Calculate loss
-        obs_loss = -obs_dist.log_prob(obs).mean()
-        reward_loss = -reward_dist.log_prob(reward).mean()
-        gamma_loss = -gamma_dist.log_prob(gamma.round()).mean()
-        kl_value = kl_divergence(post_dist_detach, prior_dist)
-        prior_loss = self.kl_balance * kl_value
-        post_loss = (1 - self.kl_balance) * kl_divergence(post_dist, prior_dist_detach)
-        kl_loss = self.kl_scale * (prior_loss + post_loss).mean()
-        loss = (self.obs_scale*obs_loss
-                + self.reward_scale*reward_loss
-                + self.gamma_scale*gamma_loss
-                + self.kl_scale*kl_loss)
+        obs_loss = -obs_dist.log_prob(obs).mean() # the best this can converge to is .9189 because of the scale
+        if reward_pred is not None:
+            reward_loss = -reward_dist.log_prob(reward).mean() # the best this can converge to is .9189 because of the scale
+        # TODO - I don't think the .round() is necessary
+        gamma_loss = -gamma_dist.log_prob(gamma.round()).mean() # seems to learn with this
+
+        # CHANGELOG - copied directly from tensorflow implementation
+        value_lhs = kl_value = kl_divergence(post_dist, prior_dist_detach)
+        value_rhs = kl_divergence(post_dist_detach, prior_dist)
+        loss_lhs = torch.maximum(value_lhs.mean(), torch.tensor(0.0))
+        loss_rhs = torch.maximum(value_rhs.mean(), torch.tensor(0.0))
+        kl_loss = ((1 - self.kl_balance) * loss_lhs) + (self.kl_balance * loss_rhs)
+        # kl_loss = ((1 - self.kl_balance) * value_lhs) + (self.kl_balance * value_rhs)
+
+
+        # kl_value = kl_divergence(post_dist_detach, prior_dist)
+        # prior_loss = self.kl_balance * kl_value
+        # post_loss = (1 - self.kl_balance) * kl_divergence(post_dist, prior_dist_detach)
+        # # CHANGELOG - bugfixed kl_scale being applied twice
+        # kl_loss = (prior_loss + post_loss).mean()
+        if reward_pred is not None:
+            loss = (self.obs_scale*obs_loss
+                    + self.reward_scale*reward_loss
+                    + self.gamma_scale*gamma_loss
+                    + self.kl_scale*kl_loss)
+        else:
+            loss = (self.obs_scale*obs_loss
+                    + self.gamma_scale*gamma_loss
+                    + self.kl_scale*kl_loss)
 
         # Track metrics
         self.losses.append(loss.cpu().detach().numpy())
         self.obs_losses.append(obs_loss.cpu().detach().numpy())
-        self.reward_losses.append(reward_loss.cpu().detach().numpy())
+        if reward_pred is not None:
+            self.reward_losses.append(reward_loss.cpu().detach().numpy())
         self.gamma_losses.append(gamma_loss.cpu().detach().numpy())
         self.kl_losses.append(kl_loss.cpu().detach().numpy())
         self.kl_values.append(kl_value.cpu().detach().numpy())
@@ -492,6 +554,172 @@ class MlpDreamer(Dreamer):
         )
         recur_model = Gru(
             input_size=stoch*discrete + act_dim,
+            layer_sizes=recur_layers,
+        )
+        tran_model = Mlp(
+            input_size=recur_layers[-1],
+            layer_sizes=tran_hidden_sizes + [stoch*discrete],
+            layer_init=layer_init,
+            layer_activation=layer_activation,
+            act_last_layer=False,
+        )
+        decoder = Mlp(
+            input_size=stoch*discrete + recur_layers[-1],
+            layer_sizes=decoder_hidden_sizes + [obs_dim],
+            layer_init=layer_init,
+            layer_activation=layer_activation,
+            act_last_layer=False,
+        )
+        reward_model = Mlp(
+            input_size=stoch*discrete + recur_layers[-1],
+            layer_sizes=reward_hidden_sizes + [1],
+            layer_init=layer_init,
+            layer_activation=layer_activation,
+            act_last_layer=False,
+        )
+        gamma_model = Mlp(
+            input_size=stoch*discrete + recur_layers[-1],
+            layer_sizes=gamma_hidden_sizes + [1],
+            layer_init=layer_init,
+            layer_activation=layer_activation,
+            act_last_layer=False,
+        )
+        super().__init__(
+            num_obs=obs_dim,
+            num_actions=act_dim,
+            stoch=stoch,
+            discrete=discrete,
+            obs_encoder=encoder,
+            repr_model=repr_model,
+            recur_model=recur_model,
+            transition_predictor=tran_model,
+            obs_decoder=decoder,
+            reward_predictor=reward_model,
+            gamma_predictor=gamma_model,
+            **kwargs
+        )
+
+
+class MlpDreamer2(Dreamer):
+    """I think this is closer to the original
+
+    CHANGELOG - tran_hidden_sizes [600, 600] -> [600]"""
+
+    def __init__(
+        self,
+        obs_dim,
+        act_dim,
+        stoch=32,
+        discrete=32,
+        encoder_layers=[400, 400, 400, 400],
+        repr_hidden_sizes=[600],
+        recur_layers=[600],
+        tran_hidden_sizes=[600],
+        decoder_hidden_sizes=[400, 400, 400, 400],
+        reward_hidden_sizes=[400, 400, 400, 400],
+        gamma_hidden_sizes=[400, 400, 400, 400],
+        layer_init="orthogonal",
+        layer_activation=F.elu,
+        **kwargs
+    ):
+        encoder = Mlp(
+            input_size=obs_dim,
+            layer_sizes=encoder_layers,
+            layer_init=layer_init,
+            layer_activation=layer_activation,
+        )
+        repr_model = Mlp(
+            input_size=encoder_layers[-1] + recur_layers[-1],
+            layer_sizes=repr_hidden_sizes + [stoch*discrete],
+            layer_init=layer_init,
+            layer_activation=layer_activation,
+            act_last_layer=False,
+        )
+        recur_model = Gru(
+            input_size=recur_layers[-1],
+            layer_sizes=recur_layers,
+        )
+        tran_model = Mlp(
+            input_size=recur_layers[-1],
+            layer_sizes=tran_hidden_sizes + [stoch*discrete],
+            layer_init=layer_init,
+            layer_activation=layer_activation,
+            act_last_layer=False,
+        )
+        decoder = Mlp(
+            input_size=stoch*discrete + recur_layers[-1],
+            layer_sizes=decoder_hidden_sizes + [obs_dim],
+            layer_init=layer_init,
+            layer_activation=layer_activation,
+            act_last_layer=False,
+        )
+        reward_model = Mlp(
+            input_size=stoch*discrete + recur_layers[-1],
+            layer_sizes=reward_hidden_sizes + [1],
+            layer_init=layer_init,
+            layer_activation=layer_activation,
+            act_last_layer=False,
+        )
+        gamma_model = Mlp(
+            input_size=stoch*discrete + recur_layers[-1],
+            layer_sizes=gamma_hidden_sizes + [1],
+            layer_init=layer_init,
+            layer_activation=layer_activation,
+            act_last_layer=False,
+        )
+        super().__init__(
+            num_obs=obs_dim,
+            num_actions=act_dim,
+            stoch=stoch,
+            discrete=discrete,
+            obs_encoder=encoder,
+            repr_model=repr_model,
+            recur_model=recur_model,
+            transition_predictor=tran_model,
+            obs_decoder=decoder,
+            reward_predictor=reward_model,
+            gamma_predictor=gamma_model,
+            **kwargs
+        )
+
+
+class MlpDreamer2Small(Dreamer):
+    """I think this is closer to the original
+
+    CHANGELOG - tran_hidden_sizes [600, 600] -> [600]"""
+
+    def __init__(
+        self,
+        obs_dim,
+        act_dim,
+        stoch=20,
+        discrete=20,
+        encoder_layers=[100, 100, 100],
+        repr_hidden_sizes=[200],
+        recur_layers=[200],
+        tran_hidden_sizes=[200],
+        decoder_hidden_sizes=[100, 100, 100],
+        reward_hidden_sizes=[100, 100, 100],
+        gamma_hidden_sizes=[100, 100, 100],
+        layer_init="orthogonal",
+        layer_activation=F.elu,
+        **kwargs
+    ):
+        encoder = Mlp(
+            input_size=obs_dim,
+            layer_sizes=encoder_layers,
+            layer_init=layer_init,
+            layer_activation=layer_activation,
+        )
+        repr_model = Mlp(
+            input_size=encoder_layers[-1] + recur_layers[-1],
+            layer_sizes=repr_hidden_sizes + [stoch*discrete],
+            layer_init=layer_init,
+            layer_activation=layer_activation,
+            act_last_layer=False,
+        )
+        recur_model = Gru(
+            input_size=recur_layers[-1],
             layer_sizes=recur_layers,
         )
         tran_model = Mlp(

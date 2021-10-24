@@ -16,7 +16,7 @@ torch.manual_seed(0)
 np.random.seed(0)
 
 # Device for the networks
-DEVICE = "cuda:0"
+DEVICE = "cuda:1"
 
 # Environment info
 ENV_NAME = "Pendulum-v0"
@@ -24,8 +24,8 @@ ENV_NAME = "Pendulum-v0"
 # Hyperparams
 BUFFER_SIZE = 50000
 MAX_PATH_LEN = 200
-BATCH_SIZE = 512
-TAU = 0.01
+BATCH_SIZE = 256
+TAU = 0.005
 POLICY_LR = 3e-4
 CRITIC_LR = 3e-4
 ACTOR_HIDDEN = [64,64]
@@ -35,7 +35,7 @@ CRITIC_HIDDEN = [64,64]
 env = gym.make(ENV_NAME).env
 eval_env = gym.make(ENV_NAME).env
 env.seed(0)
-eval_env.seed(1)
+eval_env.seed(100)
 
 # Env dimensions
 obs_dim = env.observation_space.low.size
@@ -105,7 +105,7 @@ algorithm = SAC(
             )
 
 # Create training routine
-logger = Logger("name-of-experiment-2")
+logger = Logger("pendulum/sac/trainer2/")
 trainer = Trainer(
               algorithm=algorithm,
               exploration_env=env,
@@ -115,13 +115,13 @@ trainer = Trainer(
               replay_buffer=replay_buffer,
               logger=logger,
               batch_size=BATCH_SIZE,
-              num_epochs=180,
-              num_eval_eps_per_epoch=1,
-              num_train_loops_per_epoch=2,
-              num_trains_per_train_loop=100,
-              num_expl_steps_per_train_loop=100,
+              num_epochs=200,
+              num_eval_eps_per_epoch=10,
+              num_train_loops_per_epoch=1000,
+              num_trains_per_train_loop=1,
+              num_expl_steps_per_train_loop=1,
               min_num_steps_before_training=1000,
               checkpoint_freq=5,
           )
-trainer.to("cuda:0")
+trainer.to("cuda:1")
 trainer.train()

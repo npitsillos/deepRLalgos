@@ -8,6 +8,30 @@ from drl_algos.data import ModelPathCollector2, EpisodicReplayBuffer, Logger2
 from drl_algos.trainers import DreamerAlgorithm2 as Trainer
 from drl_algos import utils
 
+"""
+Notes:
+    - Definietly something going on with the Dreamer policy as it is always
+    choosing actions around 0 for evaluation. I reckon its a problem with the
+    policy loss which seems to stay consistently low.
+    - Need to check if model is actually learning, say comparing real
+    trajectories to imagined ones.
+        - Lets train a SAC agent on pendulum then save the entire replay buffer
+        - Then lets train the model but hold back some trajectories for
+        evaluation
+        - Lets periodically compare the real trajectories to the imagined ones
+        - Gives us certainty that the model is actually learning and performing
+        well. If the model isn't accurate then nothing else will work
+        - Side note - could input normalisation/standardisation be a concern
+        here since we've moved from pixel values to low state (which may not
+        be normalized)?
+    - After confirming the model is working we can look into the DRL algorithm
+        - Might even be worth training it using real data rather than the model
+        at least to confirm that it is working
+        - Then it might be worth trying to train it with a pretrained model
+        - Then finally moving onto the harder case of learning both at the same
+        time
+"""
+
 torch.manual_seed(0)
 np.random.seed(0)
 

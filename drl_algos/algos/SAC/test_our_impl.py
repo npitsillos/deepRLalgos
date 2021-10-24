@@ -34,8 +34,8 @@ ENV_NAME = "Pendulum-v0"
 # Hyperparams
 BUFFER_SIZE = 50000
 MAX_PATH_LEN = 200
-BATCH_SIZE = 512
-TAU = 0.01
+BATCH_SIZE = 256
+TAU = 0.005
 POLICY_LR = 3e-4
 CRITIC_LR = 3e-4
 ACTOR_HIDDEN = [64,64]
@@ -45,7 +45,7 @@ CRITIC_HIDDEN = [64,64]
 env = gym.make(ENV_NAME).env
 eval_env = gym.make(ENV_NAME).env
 env.seed(0)
-eval_env.seed(1)
+eval_env.seed(100)
 
 # Env dimensions
 obs_dim = env.observation_space.low.size
@@ -113,7 +113,7 @@ algorithm = SAC(
             )
 
 # Create training routine
-utils.setup_logger('name-of-experiment')
+utils.setup_logger('pendulum/sac-original/')
 trainer = Trainer(
               algorithm=algorithm,
               exploration_env=env,
@@ -122,13 +122,13 @@ trainer = Trainer(
               evaluation_path_collector=eval_path_collector,
               replay_buffer=replay_buffer,
               batch_size=BATCH_SIZE,
-              max_path_length=MAX_PATH_LEN,
-              num_epochs=500,
-              num_eval_steps_per_epoch=MAX_PATH_LEN*1,
-              num_train_loops_per_epoch=1,
-              num_trains_per_train_loop=MAX_PATH_LEN,
-              num_expl_steps_per_train_loop=MAX_PATH_LEN,
-              min_num_steps_before_training=1000
+              num_epochs=200,
+              num_eval_steps_per_epoch=200*10,
+              num_train_loops_per_epoch=1000,
+              num_trains_per_train_loop=1,
+              num_expl_steps_per_train_loop=1,
+              min_num_steps_before_training=1000,
+              max_path_length=200,
           )
-trainer.to("cuda:0")
+trainer.to("cuda:1")
 trainer.train()

@@ -1,0 +1,91 @@
+Notes on PopArt:
+  - PopArt learns how to scale and shift targets so that they are normalized
+  but it preserves the output of the unnormalized function
+  - It's general purpose but has a clear application for reinforcement learning
+  where the scale of rewards can vary greatly
+    - Normal solution is to clip rewards between -1 and 1 but this clearly
+    changes the learning task. Instead, PopArt normalises the returns, e.g.,
+    the Q-values etc
+      - It works for (some) atari environments but isn't general to other
+      environments
+      - e.g., clipping our pick environment would make it more rewarding to
+      repeatedly drop the object and pick it back up rather than complete the
+      task since the large negative reward for dropping it is clipped
+        - In general, I think tasks with a positive terminal state will struggle
+        to apply reward clipping in a meaningful way
+      - in real-world contexts, do we really want the agent to ignore the
+      magnitude of its mistakes?
+    - RL algorithms are often sensitive to the scale of rewards, e.g., for some
+    environments its standard practice to scale all the rewards by fixed value
+    which can be the difference between learning and not learning
+      - PopArt removes this concern
+    - It's good for multi-task learning, as each task will have equal weighting
+    regardless of the value of their rewards
+
+
+Notes on dealing with large losses of Potential:
+  - The issue with potential based shaping is that in environments like Pick,
+  the agent can suddenly lose all its potential by dropping the object. Since
+  this potential is racked up over many timesteps, it means that the scale of
+  the negative reward is much larger than anything else it will encounter.
+  - A somewhat simple solution to this problem is to perform the following:
+      - Manually tweak the reward function so that (excluding the actions that
+      result in large losses of potential) all rewards are within -1 to 1
+      - Clip rewards by -1 to 1, since the reward function is already manually
+      bounded within -1 to 1 this should not affect normal training
+        - If rewards can be larger than 1, clipping would effectively encourage
+        the agent to go slower. E.g., if a single action could result in a
+        reward of 1.5, it would be more rewarding to take a smaller action that
+        is only rewarded 1 so that the .5 can be obtained in the next action.
+        - Not ideal but not a major problem either
+      - Whenever an action is taken which results in a preclipped reward of
+      less than -1, i.e. a large loss in potential, end the episode.
+        - Continuing the episode could encourage unwanted behaviours, e.g.,
+        repeatedly picking up and dropping the object.
+      - Overall, this approach requires careful design of the reward function
+        - Rewards should be as close to the range of -1 to 1 without being
+        clipped. Being too conservative with the range means clipped rewards
+        will still be of a different magnitude that could destabilise learning
+        - It is more important that negative rewards are within the -1 lower
+        bound otherwise it'll be too easy to fail. The episode should only end
+        due to big mistakes
+  - PopArt would clearly avoid the tediousness of tweaking the reward function
+  to be as close to the -1 and 1 bounds without violating them.
+    - It would also remove the requirement that the episode is ended whenever a
+    big mistake is made
+    - It would preserve the benefits of potential based reward shaping, that
+    being that we can introduce reward shaping information without changing
+    the optimal policy.
+
+Notes on Dreamer:
+  - When applied to Atari environments it uses Tanh to bound the rewards, but
+  I believe that for other environments it didn't bound the rewards so it can
+  predict rewards outside the -1 to 1 range.
+    - Could be an interesting Paper to investigate using PopArt to enable the
+    reward head to predict the unclipped reward values
+    - Will scale of rewards affect the balancing of the loss functions? I.e.,
+    would environments with small rewards need the loss to be scaled up while
+    environments with higher rewards would need th loss to be scaled down?
+      - I suspect yes.
+  - PopArt is good for multi-task learning in RL so it should also be good for
+  training networks with multiple heads
+    - The key benefit is that it means that all the learning tasks have equal
+    weighting. So Dreamer would apply equal effort to learning to predicting
+    rewards and discounts, minimising kl_loss and reconstructing the images.
+    - Do we always want these to be applied equal weighting? If not, could we
+    use PopArt to first of all make them be applied equal weighting then scale
+    the losses how we see fit? The benefit being that regardless of the task,
+    we know they all have equal weighting before we apply any balancing of
+    priorities so the balancing is consistent across environments.
+  - Dreamer is purely image based but our behaviours have goals which are not
+  expressed as images. How do we integrate together low-state information and
+  images?
+    - Naive solution is just to concatenate the goal with the image features but
+    we know that combining multi-modal data is often not that simple.
+      - I have a lack of expertise on this subject, but regardless or whether
+      I use dreamer or not, I'll need to find a solution if I am using both
+      images and low-state goals. 
+    - Can we embed goals into images? Potentially, but how will this be done in
+    a user friendly way?
+    - Can we do away with goals entirely? Potentially, but how limiting will
+    that in terms of generalisability?
