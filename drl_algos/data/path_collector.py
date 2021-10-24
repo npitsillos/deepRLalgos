@@ -180,6 +180,7 @@ class MdpPathCollector2(object):
         self._epoch_episodes = deque(maxlen=self._max_episodes_saved)
         self._episode_step_counter = 0
         self._last_obs = None
+        self._done = True
         self._num_steps_total = 0
         self._num_episodes_total = 0
 
@@ -354,8 +355,9 @@ class MdpPathCollector2(object):
             if d:
                 break
 
-        # Track final observation for next rollout call
+        # Track final observation and done for next rollout call
         self._last_obs = o
+        self._done = d
 
         # TODO - avoid needing to convert to numpy
         actions = np.array(actions)
@@ -444,6 +446,7 @@ class MdpPathCollector2(object):
     def _reset(self):
         self._policy.reset()
         self._last_obs = self._env.reset()
+        self._done = False
         if self._reset_callback:
             self._reset_callback(self._env, self._policy, self._last_obs)
         if self._render:
@@ -455,8 +458,8 @@ class MdpPathCollector2(object):
         # If reached max_episode_length then should reset
         if self._episode_step_counter == self._max_episode_length:
             return True
-        # If no last_obs, i.e., very first episode, then should reset
-        if self._last_obs is None:
+        # If last episode ended then should reset
+        if self._done is True:
             return True
         return False
 
@@ -561,6 +564,7 @@ class ModelPathCollector2(MdpPathCollector2):
         # Track final observation for next rollout call
         self._last_obs = o
         self._last_model_state = model_state
+        self._done = d
 
         # TODO - avoid needing to convert to numpy
         actions = np.array(actions)
